@@ -1,0 +1,7 @@
+fastmcp
+python-docx
+fpdf2
+openpyxl
+pdfplumber
+Pillow
+matplotlib
