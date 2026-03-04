@@ -4,7 +4,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from pathlib import Path
 
-from utils.security import validate_image_path
+from utils.security import validate_image_path, validate_path
 from utils.file_utils import generate_output_path
 
 

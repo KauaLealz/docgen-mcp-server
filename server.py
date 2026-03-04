@@ -19,6 +19,7 @@ from fastmcp import FastMCP
 from handlers.docx_handler import create_docx, read_docx
 from handlers.pdf_handler import create_pdf, read_pdf
 from handlers.excel_handler import create_excel, read_excel
+from handlers.pptx_handler import create_pptx_from_html
 from handlers.markdown_handler import markdown_to_document
 from handlers.chart_handler import create_chart, create_chart_document
 from handlers.txt_handler import create_txt, read_txt, append_txt
@@ -34,6 +35,7 @@ mcp = FastMCP(
         "Use create_docx/create_pdf/create_excel to generate documents from structured sections. "
         "Use read_docx/read_pdf/read_excel to extract content from existing files. "
         "Use markdown_to_document to convert raw markdown into docx or pdf. "
+        "Use create_pptx_from_html to generate PowerPoint (.pptx) from HTML with multiple slides (use <section> or <div class=\"slide\">), rich text, tables, lists, images, and links. "
         "Use create_chart to generate charts (bar, line, pie, scatter, area, horizontal_bar) as PNG images. "
         "Use create_chart_document to generate a chart and embed it directly in a docx or pdf. "
         "Use create_txt to write plain text files, read_txt to read them, append_txt to append content. "
@@ -194,6 +196,38 @@ def tool_read_pdf(file_path: str, pages: list[int] | None = None) -> dict:
         pages: Optional list of 0-based page indices. Reads all if omitted.
     """
     return read_pdf(file_path, pages)
+
+
+# ─── PPTX (HTML) ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="create_pptx_from_html",
+    description=(
+        "Generate a PowerPoint (.pptx) presentation from HTML. "
+        "Supports multiple slides (use <section> or <div class=\"slide\"> per slide), "
+        "rich text (bold, italic, colors via <span style=\"color: #hex\">), tables, lists, "
+        "images (file path or data URI), and clickable links (<a href>). "
+        "Returns the output file path."
+    ),
+    tags={"document", "pptx", "powerpoint", "html", "generate"},
+)
+def tool_create_pptx_from_html(
+    output_path: str,
+    html_content: str,
+    title: str | None = None,
+) -> str:
+    """Create a PowerPoint presentation from HTML.
+
+    Args:
+        output_path: Absolute path for the output .pptx file (e.g. C:/docs/deck.pptx). Overwrites if exists.
+        html_content: Full HTML string. Use <section> or <div class=\"slide\"> for each slide;
+            otherwise the whole content is one slide. Supports <h1>–<h4>, <p>, <b>, <i>, <span style=\"color:...\">,
+            <table>, <ul>/<ol>, <img src=\"...\">, <a href=\"...\">.
+        title: Optional presentation title; used as the first slide title if provided.
+    """
+    path = create_pptx_from_html(html_content, output_path, title)
+    return f"Apresentação PowerPoint gerada: {path}"
 
 
 # ─── MARKDOWN ────────────────────────────────────────────────────────────────

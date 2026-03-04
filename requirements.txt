@@ -1,5 +1,7 @@
 fastmcp
 python-docx
+python-pptx
+beautifulsoup4
 fpdf2
 openpyxl
 pdfplumber
