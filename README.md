@@ -1,165 +1,137 @@
 # DocGen MCP Server
 
-A powerful **Model Context Protocol (MCP)** server that gives AI agents the ability to generate and read documents in multiple formats. Create professional Word documents, PDFs, Excel workbooks, PowerPoint presentations, charts, text files, and ZIP archives—all through a single, unified toolset.
+## O que é
 
-## Why DocGen?
+Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) via **stdio** para leitura e escrita de documentos, planilhas, renderização HTML→PDF (Puppeteer) e utilitários de arquivo. Está publicado no npm como **`docgen-mcp-server`** e requer **Node.js 18+**.
 
-DocGen turns your AI assistant into a full-featured document engine. It exposes a rich set of tools so agents can produce **polished, structured output** instead of plain text: reports in DOCX or PDF, spreadsheets with multiple sheets, presentations from HTML, and charts as images or embedded in documents. All operations are **path-validated** and **security-conscious**, blocking writes to sensitive system directories.
+Recomenda-se executar com **`npx -y docgen-mcp-server@latest`** para o `npx` resolver sempre o dist-tag **latest** (evita reutilizar cache de instalação antiga). Para travar em uma versão: `docgen-mcp-server@<versão>` no lugar de `@latest`.
 
----
+Na primeira execução, **Puppeteer** pode baixar Chromium (tools `render_slide` e `render_page`).
 
-## Features & Capabilities
+## Ferramentas
 
-### Document generation
+| Módulo | Ferramenta | Descrição resumida |
+|--------|------------|-------------------|
+| **read_** | `read_doc` | `.docx`/`.pdf`/`.odt` → Markdown; `previewOnly` / `maxChars` limitam saída. |
+| | `read_sheet` | Planilhas → JSON ou Markdown; `range` tipo `A1:D10`; `previewOnly` / `maxRows`. |
+| | `read_archive` | Lista árvore de entradas em `.zip`. |
+| **write_** | `write_doc` | `.docx`/`.pdf`; **Markdown** (`#`, listas, \`\`\`) ou `contentFormat: plain`; template `{{campo}}`. |
+| | `write_sheet` | `.xlsx` ou `.csv`; `append` em `.xlsx` para logs. |
+| **render_** | `render_slide` | HTML/CSS → PDF ou ZIP de slides (use `.slide` por página). |
+| | `render_page` | HTML/CSS → PDF A4 (índice opcional). |
+| **patch_** | `patch_doc` | PDF: merge, split, watermark; DOCX: `replace_text` em XML. |
+| | `patch_sheet` | Atualiza células em `.xlsx`. |
+| **system_** | `scan_dir` | Busca por regex em diretório ou em arquivos/ZIPs. |
+| | `diff_file` | Diff texto ou dados (planilhas). |
+| | `bundle_zip` | Compacta lista de arquivos em um ZIP. |
 
-- **Word (DOCX)** — Generate documents from structured sections: headings, paragraphs, **bold**/ *italic* text, tables, images, code blocks, and bulleted or numbered lists. Perfect for reports, specs, and formal documents.
-- **PDF** — Same section schema as DOCX: titles, body text, tables, images, code, lists, and page breaks. Ideal for sharing and printing.
-- **Excel (XLSX)** — Build workbooks with multiple sheets, custom headers, typed columns (string, number, date, auto), optional column widths, and embedded images. Supports common date formats.
+### Segurança
 
-### Presentations from HTML
+- Sem `..` nos caminhos; leitura limitada por tamanho de ficheiro.
+- **Escrita bloqueada** em pastas do sistema (ex.: `Windows`, `Program Files`, `.ssh`, `.aws` no home).
+- Opcional: **`DOCGEN_ALLOWED_ROOTS`** — lista separada por vírgulas de pastas absolutas; só é permitido ler/escrever dentro delas (útil em monorepos/CI).
 
-- **PowerPoint (PPTX)** — Generate slides directly from **HTML**. Use `<section>` or `<div class="slide">` for multiple slides; support for **rich text** (bold, italic), **colors** via `<span style="color: #hex">`, **tables**, **lists**, **images** (file path or data URI), and **clickable links** (`<a href>`). Great for colorful, interactive decks without leaving your workflow.
+### Variáveis de ambiente (opcional)
 
-### Markdown & charts
+| Variável | Efeito |
+|----------|--------|
+| `DOCGEN_ALLOWED_ROOTS` | Ex.: `C:\repo\my-app,C:\tmp` — restrição de caminhos. |
+| `DOCGEN_SCAN_MAX_MATCHES` | Máximo de correspondências em `scan_dir` (padrão 500). |
+| `DOCGEN_READ_SHEET_MAX_ROWS` | Teto de linhas de dados em `read_sheet` quando não usas `maxRows` (padrão 10000). |
 
-- **Markdown to document** — Convert raw Markdown into DOCX or PDF. Handles headings, bold/italic, tables, code blocks, lists, images, and page breaks (`---`).
-- **Charts** — Create bar, horizontal bar, line, pie, scatter, and area charts as PNG, or embed them directly in a DOCX or PDF with optional extra sections.
+Erros das tools devolvem **`structuredContent`** com `ok: false`, `code`, `tool`, `message` e às vezes `hint`.
 
-### Files & utilities
+## Como usar nos clientes (recomendado: npm publicado)
 
-- **Text files** — Create, read, and append plain text with configurable encoding.
-- **ZIP archives** — Bundle files and directories (recursive) into a ZIP; list contents without extracting.
-- **Files & folders** — List directory contents (optional filter by extension) and create directories (including parents).
+Em qualquer cliente MCP com transporte **stdio**:
 
-### Security & reliability
+- **Comando**: `npx` (no Windows, se necessário, use o caminho completo de `npx.cmd`).
+- **Argumentos**: `["-y", "docgen-mcp-server@latest"]` (ou versão fixa: `["-y", "docgen-mcp-server@3.0.0"]`).
+- **Variáveis de ambiente**: opcional; veja variáveis do Puppeteer/Chromium se precisar de proxy ou caminho de browser.
 
-- **Path validation** — All write operations validate paths and block traversal and symlink tricks.
-- **Protected directories** — Writes to system and sensitive folders (e.g. Windows, Program Files, `.ssh`, `.aws`) are blocked.
-- **Safe image handling** — Image paths are validated and restricted to supported formats.
-
----
-
-## Requirements
-
-- **Python 3.10+**
-- Dependencies listed in `requirements.txt`
-
----
-
-## Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd docgen-mcp-server
-
-# Create a virtual environment (recommended)
-python -m venv venv
-# Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-# Linux/macOS:
-# source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
----
-
-## Using the MCP Server
-
-### 1. Configure in Cursor or your MCP client
-
-Add the server to your MCP configuration. Example for **Cursor** (in MCP settings or project config):
+Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
 
 ```json
 {
   "mcpServers": {
     "docgen": {
-      "command": "python",
-      "args": ["-m", "server"],
-      "cwd": "C:/path/to/docgen-mcp-server",
+      "command": "npx",
+      "args": ["-y", "docgen-mcp-server@latest"],
       "env": {}
     }
   }
 }
 ```
 
-Replace `C:/path/to/docgen-mcp-server` with the absolute path to the project folder.
+No repositório há um exemplo em [`.cursor/mcp.json.example`](.cursor/mcp.json.example).
 
-**Using the venv Python executable:**
+### Cursor
 
-```json
-{
-  "mcpServers": {
-    "docgen": {
-      "command": "C:/path/to/docgen-mcp-server/venv/Scripts/python.exe",
-      "args": ["-m", "server"],
-      "cwd": "C:/path/to/docgen-mcp-server"
-    }
-  }
-}
-```
+**Configurações → MCP** (ou JSON de MCP do projeto): use `command`, `args` e `env` como acima.
 
-### 2. Run manually (stdio)
+### Claude Desktop
 
-To run the server directly (e.g. for debugging):
+Mesmo esquema de `command`, `args` e `env`. Detalhes de caminho do arquivo de configuração variam por SO; veja a [documentação da Anthropic sobre MCP](https://docs.anthropic.com/en/docs/agents-and-tools/mcp).
+
+### Problemas comuns no Windows com `npx`
+
+Se aparecer **`EPERM`**, **`TAR_ENTRY_ERROR`** ou erros tipo **`Cannot find package '...\node_modules\yauzl\index.js'`**, o cache do **`npx`** costuma estar **corrompido** (extração interrompida quando o Cursor recarrega o MCP no meio do `npm install`).
+
+1. Desligue ou desative temporariamente o servidor Docgen no MCP.
+2. Apague **`%LocalAppData%\npm-cache\_npx`** (pasta inteira ou só o subdiretório do pacote).
+3. Suba o MCP de novo com `npx -y docgen-mcp-server@latest`.
+
+Alternativa estável: `npm install -g docgen-mcp-server` e no MCP use **`command`: `docgen-mcp-server`** (sem `npx`), ou **`node`** com o caminho absoluto do `cli.js` global.
+
+## Desenvolvimento a partir do clone
 
 ```bash
-# From the project root with venv activated
-python -m server
+git clone <repo>
+cd docgen-mcp-server
+npm install
+npm run build
+npm start
 ```
 
-The server uses **stdio** transport: it reads JSON-RPC from stdin and writes to stdout. Your MCP client starts this process and connects the pipes.
+Sem build prévio (local):
 
-### 3. Available tools
-
-Once connected, the client can call tools such as:
-
-| Tool | Description |
-|------|-------------|
-| `create_docx` | Generate Word from sections (title, paragraphs, tables, images, code, lists). |
-| `read_docx` | Extract text, tables, and metadata from a .docx. |
-| `create_pdf` | Generate PDF with the same section schema as DOCX. |
-| `read_pdf` | Extract text and tables from a PDF (optional page range). |
-| `create_excel` | Generate an .xlsx workbook with multiple sheets, headers, rows, and optional images. |
-| `read_excel` | Extract sheet names, headers, and rows from an .xlsx. |
-| `create_pptx_from_html` | Generate PowerPoint from HTML: multiple slides, rich text, colors, tables, lists, images, links. |
-| `markdown_to_document` | Convert Markdown to .docx or .pdf. |
-| `create_chart` | Generate a chart (bar, line, pie, scatter, area, horizontal_bar) as PNG. |
-| `create_chart_document` | Generate a chart and embed it in a docx or pdf, with optional extra sections. |
-| `create_txt` / `read_txt` / `append_txt` | Create, read, and append plain text files. |
-| `create_zip` / `read_zip` | Create ZIP archives and list their contents. |
-| `list_files` | List files in a directory (optional extension filter). |
-| `create_folder` | Create a directory and all parent directories. |
-
-All creation tools require an `output_path` with the absolute path for the output file.
-
----
-
-## Project structure
-
-```
-docgen-mcp-server/
-├── server.py          # FastMCP entry point and tool registration
-├── __main__.py        # Enables: python -m server
-├── requirements.txt
-├── handlers/          # Generation and reading logic by format
-│   ├── docx_handler.py
-│   ├── pdf_handler.py
-│   ├── excel_handler.py
-│   ├── pptx_handler.py
-│   ├── markdown_handler.py
-│   ├── chart_handler.py
-│   ├── txt_handler.py
-│   └── zip_handler.py
-└── utils/
-    ├── file_utils.py   # Output paths and directory listing
-    └── security.py     # Path validation and blocked directories
+```bash
+npm install
+npm run dev
 ```
 
----
+| Script | Ação |
+|--------|------|
+| `npm run build` | Compila `src/` → `dist/` (`tsc`) |
+| `npm start` | `node dist/cli.js` |
+| `npm run dev` | `tsx src/cli.ts` |
 
-## License
+## Publicação no npm (mantenedores)
 
-As defined in the project repository.
+O pacote não inclui `node_modules`; o tarball contém só `dist/` + `README.md` + `package.json` (dependências são instaladas pelo cliente ao rodar `npx`).
+
+```bash
+npm whoami
+npm publish --dry-run
+npm publish
+```
+
+Se a conta tiver **2FA “Auth and writes”**, o npm exige OTP:
+
+```bash
+npm publish --otp=123456
+```
+
+Erro **403 Forbidden** com nome livre costuma ser: OTP ausente, `npm login` em outra conta, ou registro apontando para outro servidor (`npm config get registry` deve ser `https://registry.npmjs.org/`).
+
+Versões subsequentes (como no Nautilus):
+
+```bash
+npm run release        # patch
+npm run release:minor
+npm run release:major
+```
+
+## Licença
+
+ISC

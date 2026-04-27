@@ -1,48 +1,11 @@
-# Bytecode e cache Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
+node_modules/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Ambientes virtuais
-venv/
-.venv/
-env/
+# Ambiente local / segredos
+.env
+.env.*
+!.env.example
 .env.local
-
-# Testes e cache de testes
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-output/
-test_output*
-*.pptx
-*.docx
-*.pdf
-*.xlsx
-*.png
-
-# E2E / testes que geram arquivos
-e2e_cache/
-.cache/
 
 # IDE e editor
 .idea/
@@ -55,7 +18,13 @@ e2e_cache/
 .DS_Store
 Thumbs.db
 
-# Variáveis de ambiente (secrets)
-.env
-.env.*
-!.env.example
+# Artefatos / cache opcional
+.cache/
+*.log
+
+# Pastas de teste MCP / E2E local
+.mcp-e2e*/
+
+# Ambiente virtual Python legado (se ainda existir na máquina)
+venv/
+.venv/
