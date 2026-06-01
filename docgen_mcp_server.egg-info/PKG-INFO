@@ -1,0 +1,154 @@
+Metadata-Version: 2.4
+Name: docgen-mcp-server
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: beautifulsoup4>=4.14.3
+Requires-Dist: mammoth>=1.12.0
+Requires-Dist: markdownify>=1.2.2
+Requires-Dist: mcp>=1.27.2
+Requires-Dist: openpyxl>=3.1.5
+Requires-Dist: playwright>=1.60.0
+Requires-Dist: pypdf>=6.12.2
+Requires-Dist: python-docx>=1.2.0
+Requires-Dist: python-dotenv>=1.2.2
+Requires-Dist: reportlab>=4.5.1
+
+# DocGen MCP Server
+
+## O que é
+
+Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) via **stdio** para leitura e escrita de documentos, planilhas, renderização HTML→PDF (Puppeteer) e utilitários de arquivo. Está publicado no npm como **`docgen-mcp-server`** e requer **Node.js 18+**.
+
+Recomenda-se executar com **`npx -y docgen-mcp-server@latest`** para o `npx` resolver sempre o dist-tag **latest** (evita reutilizar cache de instalação antiga). Para travar em uma versão: `docgen-mcp-server@<versão>` no lugar de `@latest`.
+
+Na primeira execução, **Puppeteer** pode baixar Chromium (tools `render_slide` e `render_page`).
+
+## Ferramentas
+
+| Módulo | Ferramenta | Descrição resumida |
+|--------|------------|-------------------|
+| **read_** | `read_doc` | `.docx`/`.pdf`/`.odt` → Markdown; `previewOnly` / `maxChars` limitam saída. |
+| | `read_sheet` | Planilhas → JSON ou Markdown; `range` tipo `A1:D10`; `previewOnly` / `maxRows`. |
+| | `read_archive` | Lista árvore de entradas em `.zip`. |
+| **write_** | `write_doc` | `.docx`/`.pdf`; **Markdown** (`#`, listas, \`\`\`) ou `contentFormat: plain`; template `{{campo}}`. |
+| | `write_sheet` | `.xlsx` ou `.csv`; `append` em `.xlsx` para logs. |
+| **render_** | `render_slide` | HTML/CSS → PDF ou ZIP de slides (use `.slide` por página). |
+| | `render_page` | HTML/CSS → PDF A4 (índice opcional). |
+| **patch_** | `patch_doc` | PDF: merge, split, watermark; DOCX: `replace_text` em XML. |
+| | `patch_sheet` | Atualiza células em `.xlsx`. |
+| **system_** | `scan_dir` | Busca por regex em diretório ou em arquivos/ZIPs. |
+| | `diff_file` | Diff texto ou dados (planilhas). |
+| | `bundle_zip` | Compacta lista de arquivos em um ZIP. |
+
+### Segurança
+
+- Sem `..` nos caminhos; leitura limitada por tamanho de ficheiro.
+- **Escrita bloqueada** em pastas do sistema (ex.: `Windows`, `Program Files`, `.ssh`, `.aws` no home).
+- Opcional: **`DOCGEN_ALLOWED_ROOTS`** — lista separada por vírgulas de pastas absolutas; só é permitido ler/escrever dentro delas (útil em monorepos/CI).
+
+### Variáveis de ambiente (opcional)
+
+| Variável | Efeito |
+|----------|--------|
+| `DOCGEN_ALLOWED_ROOTS` | Ex.: `C:\repo\my-app,C:\tmp` — restrição de caminhos. |
+| `DOCGEN_SCAN_MAX_MATCHES` | Máximo de correspondências em `scan_dir` (padrão 500). |
+| `DOCGEN_READ_SHEET_MAX_ROWS` | Teto de linhas de dados em `read_sheet` quando não usas `maxRows` (padrão 10000). |
+
+Erros das tools devolvem **`structuredContent`** com `ok: false`, `code`, `tool`, `message` e às vezes `hint`.
+
+## Como usar nos clientes (recomendado: npm publicado)
+
+Em qualquer cliente MCP com transporte **stdio**:
+
+- **Comando**: `npx` (no Windows, se necessário, use o caminho completo de `npx.cmd`).
+- **Argumentos**: `["-y", "docgen-mcp-server@latest"]` (ou versão fixa: `["-y", "docgen-mcp-server@3.0.0"]`).
+- **Variáveis de ambiente**: opcional; veja variáveis do Puppeteer/Chromium se precisar de proxy ou caminho de browser.
+
+Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
+
+```json
+{
+  "mcpServers": {
+    "docgen": {
+      "command": "npx",
+      "args": ["-y", "docgen-mcp-server@latest"],
+      "env": {}
+    }
+  }
+}
+```
+
+No repositório há um exemplo em [`.cursor/mcp.json.example`](.cursor/mcp.json.example).
+
+### Cursor
+
+**Configurações → MCP** (ou JSON de MCP do projeto): use `command`, `args` e `env` como acima.
+
+### Claude Desktop
+
+Mesmo esquema de `command`, `args` e `env`. Detalhes de caminho do arquivo de configuração variam por SO; veja a [documentação da Anthropic sobre MCP](https://docs.anthropic.com/en/docs/agents-and-tools/mcp).
+
+### Problemas comuns no Windows com `npx`
+
+Se aparecer **`EPERM`**, **`TAR_ENTRY_ERROR`** ou erros tipo **`Cannot find package '...\node_modules\yauzl\index.js'`**, o cache do **`npx`** costuma estar **corrompido** (extração interrompida quando o Cursor recarrega o MCP no meio do `npm install`).
+
+1. Desligue ou desative temporariamente o servidor Docgen no MCP.
+2. Apague **`%LocalAppData%\npm-cache\_npx`** (pasta inteira ou só o subdiretório do pacote).
+3. Suba o MCP de novo com `npx -y docgen-mcp-server@latest`.
+
+Alternativa estável: `npm install -g docgen-mcp-server` e no MCP use **`command`: `docgen-mcp-server`** (sem `npx`), ou **`node`** com o caminho absoluto do `cli.js` global.
+
+## Desenvolvimento a partir do clone
+
+```bash
+git clone <repo>
+cd docgen-mcp-server
+npm install
+npm run build
+npm start
+```
+
+Sem build prévio (local):
+
+```bash
+npm install
+npm run dev
+```
+
+| Script | Ação |
+|--------|------|
+| `npm run build` | Compila `src/` → `dist/` (`tsc`) |
+| `npm start` | `node dist/cli.js` |
+| `npm run dev` | `tsx src/cli.ts` |
+
+## Publicação no npm (mantenedores)
+
+O pacote não inclui `node_modules`; o tarball contém só `dist/` + `README.md` + `package.json` (dependências são instaladas pelo cliente ao rodar `npx`).
+
+```bash
+npm whoami
+npm publish --dry-run
+npm publish
+```
+
+Se a conta tiver **2FA “Auth and writes”**, o npm exige OTP:
+
+```bash
+npm publish --otp=123456
+```
+
+Erro **403 Forbidden** com nome livre costuma ser: OTP ausente, `npm login` em outra conta, ou registro apontando para outro servidor (`npm config get registry` deve ser `https://registry.npmjs.org/`).
+
+Versões subsequentes (como no Nautilus):
+
+```bash
+npm run release        # patch
+npm run release:minor
+npm run release:major
+```
+
+## Licença
+
+ISC
