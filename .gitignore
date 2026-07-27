@@ -28,3 +28,4 @@ Thumbs.db
 # Ambiente virtual Python legado (se ainda existir na máquina)
 venv/
 .venv/
+__pycache__/
