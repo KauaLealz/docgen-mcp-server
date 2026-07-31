@@ -7,7 +7,7 @@ persistir (decisão de arquitetura, contexto de negócio, bug recorrente),
 consulte e atualize:
 
 - Nota deste projeto: `~/vault/Pessoal/Projetos/docgen-mcp-server/Index.md`
-- Convenções globais (todas as empresas): `~/vault/Convenções/`
+- Diretrizes/convenções globais (todas as empresas): `~/vault/Agents/`
 
 Depois de editar o vault, faça commit/push: `cd ~/vault && git add -A && git commit -m "..." && git push`
 (o plugin Obsidian Git só sincroniza sozinho com o app aberto).
