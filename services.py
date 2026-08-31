@@ -8,6 +8,11 @@ import re
 import io
 import difflib
 import json
+import base64
+import binascii
+import mimetypes
+import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from typing import Optional, List, Dict, Any
 
@@ -25,6 +30,102 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from security import validate_path, validate_write_path
 from config import get_read_sheet_max_rows, get_scan_max_matches
+
+
+REMOTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+_FONT_FORMAT_BY_EXT = {
+    ".ttf": "truetype",
+    ".otf": "opentype",
+    ".woff": "woff",
+    ".woff2": "woff2",
+}
+_FONT_MIME_BY_FORMAT = {
+    "truetype": "font/ttf",
+    "opentype": "font/otf",
+    "woff": "font/woff",
+    "woff2": "font/woff2",
+}
+
+
+def _is_remote_url(src: str) -> bool:
+    return bool(REMOTE_URL_RE.match(src or ""))
+
+
+def _is_data_uri(src: str) -> bool:
+    return (src or "").startswith("data:")
+
+
+def _fetch_remote_bytes(url: str, timeout: int = 10) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    except (urllib.error.URLError, ValueError, TimeoutError) as e:
+        raise ValueError(f"Nao foi possivel baixar imagem remota: {url} ({e})")
+
+
+def _guess_mime(path_or_url: str) -> str:
+    mime, _ = mimetypes.guess_type(path_or_url)
+    return mime or "application/octet-stream"
+
+
+def _image_bytes_to_data_uri(data: bytes, mime: str) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _embed_local_images_in_html(html: str) -> str:
+    """Playwright/Chromium nao carrega <img src="..."> de forma confiavel
+    quando src e um path bare ou file:// via page.set_content() - so data
+    URI funciona de forma consistente. URLs http(s) e data URIs ja
+    funcionam e sao deixadas como estao."""
+    if "<img" not in html:
+        return html
+    soup = BeautifulSoup(html, "html.parser")
+    changed = False
+    for img in soup.find_all("img"):
+        src = img.get("src", "")
+        if not src or _is_data_uri(src) or _is_remote_url(src):
+            continue
+        resolved = os.path.abspath(os.path.expanduser(src))
+        if not os.path.isfile(resolved):
+            raise ValueError(f"Imagem nao encontrada: {src}")
+        with open(resolved, "rb") as f:
+            data = f.read()
+        img["src"] = _image_bytes_to_data_uri(data, _guess_mime(resolved))
+        changed = True
+    return str(soup) if changed else html
+
+
+def _build_font_face_css(fonts: Optional[list]) -> str:
+    if not fonts:
+        return ""
+    rules = []
+    for spec in fonts:
+        family = spec.get("family")
+        path = spec.get("path")
+        if not family or not path:
+            raise ValueError("Cada item de 'fonts' precisa de 'family' e 'path'")
+        resolved = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(resolved):
+            raise ValueError(f"Arquivo de fonte nao encontrado: {path}")
+        ext = os.path.splitext(resolved)[1].lower()
+        fmt = _FONT_FORMAT_BY_EXT.get(ext)
+        if not fmt:
+            raise ValueError(
+                f"Formato de fonte nao suportado: {ext} (use .ttf, .otf, .woff ou .woff2)"
+            )
+        with open(resolved, "rb") as f:
+            data = f.read()
+        b64 = base64.b64encode(data).decode("ascii")
+        weight = spec.get("weight", "normal")
+        style = spec.get("style", "normal")
+        mime = _FONT_MIME_BY_FORMAT[fmt]
+        rules.append(
+            f"@font-face {{ font-family: '{family}'; "
+            f"src: url(data:{mime};base64,{b64}) format('{fmt}'); "
+            f"font-weight: {weight}; font-style: {style}; }}"
+        )
+    return "\n".join(rules)
 
 
 def odt_xml_to_plain(xml_bytes: bytes) -> str:
@@ -407,6 +508,136 @@ def _md_to_html(md_content: str) -> str:
     )
 
 
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _inline_md_to_html(text: str) -> str:
+    html_out = md_lib.markdown(text or "", extensions=["extra", _StrikethroughExtension()])
+    if html_out.startswith("<p>") and html_out.endswith("</p>") and "<p>" not in html_out[3:-4]:
+        return html_out[3:-4]
+    return html_out
+
+
+def _runs_to_html(runs: list) -> str:
+    parts = []
+    for r in runs:
+        text = _esc(r.get("text", ""))
+        if r.get("code"):
+            text = f"<code>{text}</code>"
+        if r.get("bold"):
+            text = f"<strong>{text}</strong>"
+        if r.get("italic"):
+            text = f"<em>{text}</em>"
+        if r.get("link"):
+            text = f'<a href="{_esc(r["link"])}">{text}</a>'
+        parts.append(text)
+    return "".join(parts)
+
+
+def _block_text_to_html(block: dict) -> str:
+    if block.get("runs"):
+        return _runs_to_html(block["runs"])
+    return _inline_md_to_html(block.get("text", ""))
+
+
+def _cell_to_blocks(cell) -> list:
+    if isinstance(cell, str):
+        return [{"type": "paragraph", "text": cell}]
+    if isinstance(cell, list):
+        return cell
+    raise ValueError(f"Celula de tabela invalida: {cell!r} (use string ou lista de blocos)")
+
+
+def _list_item_to_blocks(item) -> list:
+    if isinstance(item, str):
+        return [{"type": "paragraph", "text": item}]
+    if isinstance(item, list):
+        return item
+    raise ValueError(f"Item de lista invalido: {item!r} (use string ou lista de blocos)")
+
+
+def _block_to_html(block) -> str:
+    if not isinstance(block, dict) or "type" not in block:
+        raise ValueError(f"Bloco JSON invalido, esperado objeto com 'type': {block!r}")
+    btype = block["type"]
+
+    if btype == "heading":
+        level = block.get("level", 1)
+        if not isinstance(level, int) or not (1 <= level <= 6):
+            raise ValueError(f"heading.level invalido: {level!r} (use 1-6)")
+        return f"<h{level}>{_block_text_to_html(block)}</h{level}>"
+
+    if btype == "paragraph":
+        return f"<p>{_block_text_to_html(block)}</p>"
+
+    if btype == "list":
+        style = block.get("style", "bullet")
+        tag = "ol" if style == "number" else "ul"
+        items = block.get("items", [])
+        items_html = "".join(
+            f"<li>{json_blocks_to_html(_list_item_to_blocks(item))}</li>" for item in items
+        )
+        return f"<{tag}>{items_html}</{tag}>"
+
+    if btype == "table":
+        headers = block.get("headers")
+        rows = block.get("rows", [])
+        parts = ["<table>"]
+        if headers:
+            head_cells = "".join(f"<th>{_esc(str(h))}</th>" for h in headers)
+            parts.append(f"<tr>{head_cells}</tr>")
+        for row in rows:
+            cells_html = "".join(
+                f"<td>{json_blocks_to_html(_cell_to_blocks(cell))}</td>" for cell in row
+            )
+            parts.append(f"<tr>{cells_html}</tr>")
+        parts.append("</table>")
+        return "".join(parts)
+
+    if btype == "image":
+        src = block.get("src")
+        if not src:
+            raise ValueError("image.src e obrigatorio")
+        alt = _esc(block.get("alt", "Imagem"))
+        width_attr = f' width="{_esc(str(block["width"]))}"' if block.get("width") else ""
+        return f'<img src="{_esc(src)}" alt="{alt}"{width_attr}/>'
+
+    if btype == "code":
+        text = _esc(block.get("text", ""))
+        return f"<pre><code>{text}</code></pre>"
+
+    if btype == "blockquote":
+        inner = json_blocks_to_html(block.get("blocks", []))
+        return f"<blockquote>{inner}</blockquote>"
+
+    if btype == "hr":
+        return "<hr/>"
+
+    if btype == "pagebreak":
+        return '<div class="docgen-pagebreak" style="page-break-after: always;"></div>'
+
+    raise ValueError(f"type de bloco desconhecido: {btype!r}")
+
+
+def json_blocks_to_html(blocks: list) -> str:
+    if not isinstance(blocks, list):
+        raise ValueError("content JSON deve ser uma lista de blocos no nivel raiz")
+    return "".join(_block_to_html(b) for b in blocks)
+
+
+def _content_to_html(content: str, fmt: str) -> str:
+    if fmt == "markdown":
+        return _md_to_html(content)
+    if fmt == "json":
+        try:
+            blocks = json.loads(content)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"content JSON invalido: {e}")
+        return json_blocks_to_html(blocks)
+    raise ValueError(f"contentFormat invalido: {fmt!r} (use 'markdown' ou 'json')")
+
+
 def _add_inline_runs(paragraph, element):
     for child in element.children:
         if isinstance(child, Comment):
@@ -450,63 +681,143 @@ def _add_inline_runs(paragraph, element):
                     pass
 
 
-def _html_table_to_docx(doc, table_elem):
+_BLOCK_TAGS = {
+    "p", "ul", "ol", "table", "pre", "blockquote", "hr", "img",
+    "h1", "h2", "h3", "h4", "h5", "h6", "div",
+}
+
+
+def _is_pagebreak_marker(tag_elem) -> bool:
+    classes = tag_elem.get("class") or []
+    return "docgen-pagebreak" in classes
+
+
+def _cell_has_block_children(cell_elem) -> bool:
+    return any(
+        getattr(c, "name", None) in _BLOCK_TAGS and not (
+            getattr(c, "name", None) == "div" and _is_pagebreak_marker(c)
+        )
+        for c in cell_elem.children
+    )
+
+
+def _add_heading(container, text: str, level: int):
+    if hasattr(container, "add_heading"):
+        container.add_heading(text, level=level)
+        return
+    p = container.add_paragraph(text)
+    try:
+        p.style = f"Heading {level}"
+    except KeyError:
+        for run in p.runs:
+            run.bold = True
+
+
+def _docx_image_width(width_attr: Optional[str]):
+    if not width_attr:
+        return docx.shared.Inches(4)
+    digits = re.sub(r"[^0-9]", "", width_attr)
+    if not digits:
+        return docx.shared.Inches(4)
+    return docx.shared.Inches(int(digits) / 96)  # 96px = 1in, HTML default DPI
+
+
+def _add_docx_image(container, img_elem):
+    src = img_elem.get("src", "")
+    alt = img_elem.get("alt", "Imagem")
+    width = _docx_image_width(img_elem.get("width"))
+
+    image_source = None
+    if _is_remote_url(src):
+        try:
+            image_source = io.BytesIO(_fetch_remote_bytes(src))
+        except ValueError:
+            image_source = None
+    elif _is_data_uri(src):
+        try:
+            _, b64data = src.split(",", 1)
+            image_source = io.BytesIO(base64.b64decode(b64data))
+        except (ValueError, binascii.Error):
+            image_source = None
+    elif os.path.isfile(src):
+        image_source = src
+
+    if image_source is not None and hasattr(container, "add_picture"):
+        try:
+            container.add_picture(image_source, width=width)
+            return
+        except Exception:
+            pass
+    container.add_paragraph(f"[{alt}: {src}]")
+
+
+def _html_table_to_docx(container, table_elem):
     rows = table_elem.find_all("tr")
     if not rows:
         return
-    header_cells = rows[0].find_all(["th", "td"])
-    cols = len(header_cells) if header_cells else 0
-    if cols == 0:
-        cols = max(len(r.find_all(["th", "td"])) for r in rows) if rows else 0
+    row_cells = [r.find_all(["th", "td"]) for r in rows]
+    cols = max((len(cells) for cells in row_cells), default=0)
     if cols == 0:
         return
-    table = doc.add_table(rows=len(rows), cols=cols)
+    if not hasattr(container, "add_table"):
+        container.add_paragraph(table_elem.get_text(" ", strip=True))
+        return
+    table = container.add_table(rows=len(rows), cols=cols)
     table.style = "Table Grid"
-    for ri, row_elem in enumerate(rows):
-        cells = row_elem.find_all(["th", "td"])
-        for ci, cell_elem in enumerate(cells):
-            if ci >= cols:
-                break
+    for ri, cells in enumerate(row_cells):
+        for ci in range(cols):
             cell = table.rows[ri].cells[ci]
             p = cell.paragraphs[0]
             p.clear()
-            _add_inline_runs(p, cell_elem)
+            if ci >= len(cells):
+                continue
+            _fill_docx_cell(cell, cells[ci])
 
 
-def _html_block_to_docx(doc, element):
+def _fill_docx_cell(cell, cell_elem):
+    if not _cell_has_block_children(cell_elem):
+        _add_inline_runs(cell.paragraphs[0], cell_elem)
+        return
+    _html_block_to_docx(cell, cell_elem)
+    first_p = cell.paragraphs[0]
+    if first_p.text == "" and not first_p.runs and len(cell.paragraphs) > 1:
+        first_p._element.getparent().remove(first_p._element)
+
+
+def _html_block_to_docx(container, element):
     for child in element.children:
         if isinstance(child, Comment):
             continue
         if isinstance(child, NavigableString):
             text = str(child).strip()
             if text:
-                p = doc.add_paragraph(text)
+                container.add_paragraph(text)
             continue
         tag = child.name
         if tag is None:
             continue
         if tag in set("h1 h2 h3 h4 h5 h6".split()):
             level = int(tag[1])
-            doc.add_heading(child.get_text().strip(), level=level)
+            _add_heading(container, child.get_text().strip(), level=level)
         elif tag == "p":
-            p = doc.add_paragraph()
+            p = container.add_paragraph()
             _add_inline_runs(p, child)
         elif tag == "ul":
             for li in child.find_all("li", recursive=False):
-                p = doc.add_paragraph(style="List Bullet")
+                p = container.add_paragraph(style="List Bullet")
                 _add_inline_runs(p, li)
         elif tag == "ol":
             for li in child.find_all("li", recursive=False):
-                p = doc.add_paragraph(style="List Number")
+                p = container.add_paragraph(style="List Number")
                 _add_inline_runs(p, li)
         elif tag == "table":
-            _html_table_to_docx(doc, child)
-            doc.add_paragraph()
+            _html_table_to_docx(container, child)
+            container.add_paragraph()
         elif tag == "pre":
             code_elem = child.find("code")
             code_text = code_elem.get_text() if code_elem else child.get_text()
             for line in code_text.split("\n"):
-                p = doc.add_paragraph()
+                p = container.add_paragraph()
                 run = p.add_run(line)
                 run.font.name = "Consolas"
                 run.font.size = docx.shared.Pt(9)
@@ -515,51 +826,58 @@ def _html_block_to_docx(doc, element):
         elif tag == "blockquote":
             for block_child in child.children:
                 if getattr(block_child, "name", None) == "p":
-                    p = doc.add_paragraph()
+                    p = container.add_paragraph()
                     p.paragraph_format.left_indent = docx.shared.Inches(0.5)
                     _add_inline_runs(p, block_child)
         elif tag == "hr":
-            doc.add_paragraph("─" * 50)
+            container.add_paragraph("─" * 50)
         elif tag == "img":
-            src = child.get("src", "")
-            alt = child.get("alt", "Imagem")
-            if os.path.isfile(src):
-                doc.add_picture(src, width=docx.shared.Inches(4))
+            _add_docx_image(container, child)
+        elif tag == "div" and _is_pagebreak_marker(child):
+            if hasattr(container, "add_page_break"):
+                container.add_page_break()
+        else:
+            # unrecognized tag: recurse into it if it has block children,
+            # otherwise fall back to its flattened text so nothing is
+            # silently dropped.
+            if child.find(True) is not None:
+                _html_block_to_docx(container, child)
             else:
-                doc.add_paragraph(f"[{alt}: {src}]")
+                text = child.get_text().strip()
+                if text:
+                    container.add_paragraph(text)
 
 
-def markdown_to_docx_paragraphs(doc, md_content: str):
-    html = _md_to_html(md_content)
+def html_to_docx_paragraphs(doc, html: str):
     soup = BeautifulSoup(html, "html.parser")
     _html_block_to_docx(doc, soup)
 
 
-def write_docx_markdown(content: str, out_path: str):
-    doc = docx.Document()
-    markdown_to_docx_paragraphs(doc, content)
-    doc.save(out_path)
+def _apply_docx_font_family(doc, font_family: str):
+    doc.styles["Normal"].font.name = font_family
+    for level in range(1, 10):
+        style_name = f"Heading {level}"
+        if style_name in doc.styles:
+            doc.styles[style_name].font.name = font_family
 
 
-def write_docx_plain(content: str, out_path: str):
+def write_docx_from_content(
+    content: str,
+    fmt: str,
+    out_path: str,
+    font_family: Optional[str] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None,
+):
+    html = _content_to_html(content, fmt)
     doc = docx.Document()
-    blocks = re.split(r"\n\s*\n", content)
-    for block in blocks:
-        block_str = block.strip()
-        if not block_str:
-            continue
-        lines = block_str.split("\n")
-        head = lines[0].strip() if lines else ""
-        rest = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
-        if head.startswith("# "):
-            doc.add_heading(head[2:], level=1)
-            continue
-        if head.startswith("## "):
-            doc.add_heading(head[3:], level=2)
-            continue
-        text = f"{head}\n{rest}" if rest else head
-        for line in text.split("\n"):
-            doc.add_paragraph(line)
+    if font_family:
+        _apply_docx_font_family(doc, font_family)
+    html_to_docx_paragraphs(doc, html)
+    if title:
+        doc.core_properties.title = title
+    if author:
+        doc.core_properties.author = author
     doc.save(out_path)
 
 
@@ -579,29 +897,75 @@ def merge_docx_template(template_path: str, output_path: str, merge_fields: dict
                 jout.writestr(item, data)
 
 
-def write_pdf_service(content: str, out_path: str, format_markdown: bool = False):
-    if format_markdown:
-        html_body = md_lib.markdown(
-            content, extensions=["extra", _StrikethroughExtension()]
-        )
-    else:
-        escaped = (
-            content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        html_body = f"<pre style='white-space:pre-wrap;font-family:system-ui,sans-serif;font-size:11pt;'>{escaped}</pre>"
-    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>body{{font-family:system-ui,sans-serif;font-size:11pt;line-height:1.5;margin:2cm}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}th{{background:#f5f5f5}}code{{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-family:Consolas,monospace;font-size:9.5pt}}pre{{background:#f5f5f5;padding:12px;border-radius:4px;overflow-x:auto}}pre code{{background:transparent;padding:0}}blockquote{{border-left:3px solid #ccc;margin-left:0;padding-left:16px;color:#555}}img{{max-width:100%}}h1{{font-size:20pt}}h2{{font-size:16pt}}h3{{font-size:13pt}}hr{{border:none;border-top:1px solid #ccc}}</style></head><body>{html_body}</body></html>"
+DEFAULT_PDF_CSS = "body{font-family:system-ui,sans-serif;font-size:11pt;line-height:1.5;margin:2cm}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}th{background:#f5f5f5}code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-family:Consolas,monospace;font-size:9.5pt}pre{background:#f5f5f5;padding:12px;border-radius:4px;overflow-x:auto}pre code{background:transparent;padding:0}blockquote{border-left:3px solid #ccc;margin-left:0;padding-left:16px;color:#555}img{max-width:100%}h1{font-size:20pt}h2{font-size:16pt}h3{font-size:13pt}hr{border:none;border-top:1px solid #ccc}"
+
+DEFAULT_PDF_MARGIN = {"top": "20mm", "right": "15mm", "bottom": "20mm", "left": "15mm"}
+
+
+def _set_pdf_metadata(out_path: str, title: Optional[str], author: Optional[str]):
+    if not title and not author:
+        return
+    reader = pypdf.PdfReader(out_path)
+    writer = pypdf.PdfWriter()
+    writer.append(reader)
+    meta = {}
+    if title:
+        meta["/Title"] = title
+    if author:
+        meta["/Author"] = author
+    writer.add_metadata(meta)
+    with open(out_path, "wb") as f:
+        writer.write(f)
+
+
+def write_pdf_service(
+    content: str,
+    fmt: str,
+    out_path: str,
+    css: Optional[str] = None,
+    header_html: Optional[str] = None,
+    footer_html: Optional[str] = None,
+    margins: Optional[dict] = None,
+    fonts: Optional[list] = None,
+    landscape: Optional[bool] = None,
+    tagged: Optional[bool] = None,
+    outline: Optional[bool] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None,
+):
+    html_body = _embed_local_images_in_html(_content_to_html(content, fmt))
+    font_faces = _build_font_face_css(fonts)
+    style = (font_faces + "\n" if font_faces else "") + (
+        css if css is not None else DEFAULT_PDF_CSS
+    )
+    title_tag = f"<title>{_esc(title)}</title>" if title else ""
+    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/>{title_tag}<style>{style}</style></head><body>{html_body}</body></html>"
+
+    margin = dict(DEFAULT_PDF_MARGIN)
+    if margins:
+        margin.update({k: v for k, v in margins.items() if v})
+
+    show_header_footer = bool(header_html or footer_html)
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page()
         page.set_content(full_html)
         page.pdf(
             path=out_path,
             format="A4",
             print_background=True,
-            margin={"top": "20mm", "right": "15mm", "bottom": "20mm", "left": "15mm"},
-            display_header_footer=False,
+            margin=margin,
+            display_header_footer=show_header_footer,
+            header_template=header_html or "<span></span>",
+            footer_template=footer_html or "<span></span>",
+            landscape=bool(landscape),
+            tagged=bool(tagged),
+            outline=bool(outline),
         )
         browser.close()
+
+    _set_pdf_metadata(out_path, title, author)
 
 
 def write_doc_service(params: dict) -> str:
@@ -620,16 +984,31 @@ def write_doc_service(params: dict) -> str:
                 if merge_fields
                 else f"DOCX gravado em {out_path} (copia do template)."
             )
-        if fmt == "markdown":
-            write_docx_markdown(params["content"], out_path)
-            return f"DOCX gravado em {out_path} (Markdown)."
-        else:
-            write_docx_plain(params["content"], out_path)
-            return f"DOCX gravado em {out_path}."
+        write_docx_from_content(
+            params["content"],
+            fmt,
+            out_path,
+            font_family=params.get("fontFamily"),
+            title=params.get("title"),
+            author=params.get("author"),
+        )
+        return f"DOCX gravado em {out_path}."
 
     if dtype == "pdf":
         write_pdf_service(
-            params["content"], out_path, format_markdown=(fmt == "markdown")
+            params["content"],
+            fmt,
+            out_path,
+            css=params.get("css"),
+            header_html=params.get("headerHtml"),
+            footer_html=params.get("footerHtml"),
+            margins=params.get("margins"),
+            fonts=params.get("fonts"),
+            landscape=params.get("landscape"),
+            tagged=params.get("tagged"),
+            outline=params.get("outline"),
+            title=params.get("title"),
+            author=params.get("author"),
         )
         return f"PDF gravado em {out_path}."
 
@@ -678,8 +1057,9 @@ def write_sheet_service(params: dict) -> str:
             row_values.append([r])
 
     if ext == ".csv":
+        delimiter = params.get("delimiter") or ","
         with open(out_path, mode="w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
+            writer = csv.writer(f, delimiter=delimiter)
             writer.writerow(headers)
             writer.writerows(row_values)
         return f"CSV gravado em {out_path} ({len(row_values)} linha(s))."
@@ -697,14 +1077,31 @@ def write_sheet_service(params: dict) -> str:
         ws = wb.active
         ws.title = "Sheet1"
         ws.append(headers)
+        header_fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
         for rv in row_values:
             ws.append(rv)
         if params.get("freezePanes"):
             ws.freeze_panes = "A2"
+        _autofit_columns(ws, headers, row_values)
         wb.save(out_path)
         return f"Planilha gravada em {out_path} ({len(row_values)} linha(s) de dados + cabecalho)."
 
     raise ValueError("write_sheet: use extensao .xlsx ou .csv.")
+
+
+def _autofit_columns(ws, headers: list, row_values: list, max_width: int = 60):
+    widths = [len(str(h)) for h in headers]
+    for row in row_values:
+        for i, val in enumerate(row):
+            if i >= len(widths):
+                continue
+            widths[i] = max(widths[i], len(str(val)) if val is not None else 0)
+    for i, width in enumerate(widths, start=1):
+        letter = openpyxl.utils.get_column_letter(i)
+        ws.column_dimensions[letter].width = min(max(width, 8) + 2, max_width)
 
 
 def render_slide_service(params: dict) -> str:
@@ -713,7 +1110,9 @@ def render_slide_service(params: dict) -> str:
     w = 1920 if aspect_ratio == "16:9" else 1024
     h = 1080 if aspect_ratio == "16:9" else 768
 
+    font_faces = _build_font_face_css(params.get("fonts"))
     slide_css = f"""
+    {font_faces}
     @page {{ size: {w}px {h}px; margin: 0; }}
     html, body {{ margin: 0; padding: 0; background: #fff; }}
     .slide {{
@@ -726,10 +1125,11 @@ def render_slide_service(params: dict) -> str:
     .slide:last-child {{ page-break-after: auto; }}
     {params["css"]}
     """
-    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>{slide_css}</style></head><body>{params['html']}</body></html>"
+    body_html = _embed_local_images_in_html(params["html"])
+    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>{slide_css}</style></head><body>{body_html}</body></html>"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page()
         page.set_viewport_size({"width": w, "height": h})
         page.set_content(full_html)
@@ -741,14 +1141,17 @@ def render_slide_service(params: dict) -> str:
                 height=f"{h}px",
                 print_background=True,
                 prefer_css_page_size=True,
+                tagged=bool(params.get("tagged")),
+                outline=bool(params.get("outline")),
             )
             browser.close()
+            _set_pdf_metadata(out_path, params.get("title"), params.get("author"))
             return f"Slides exportados para PDF: {out_path}"
 
         slides = page.evaluate(
             "() => Array.from(document.querySelectorAll('.slide')).map(el => el.outerHTML)"
         )
-        html_parts = slides if slides else [params["html"]]
+        html_parts = slides if slides else [body_html]
 
         zip_path = out_path if out_path.lower().endswith(".zip") else f"{out_path}.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -797,10 +1200,15 @@ def render_page_service(params: dict) -> str:
     bottom = margin.get("bottom", "20mm")
     left = margin.get("left", "15mm")
 
-    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>{toc_css}\n{params['css']}</style></head><body>{params['html'] + body_extra}</body></html>"
+    body_html = _embed_local_images_in_html(params["html"])
+    font_faces = _build_font_face_css(params.get("fonts"))
+    style = (font_faces + "\n" if font_faces else "") + toc_css + "\n" + params["css"]
+    title = params.get("title")
+    title_tag = f"<title>{_esc(title)}</title>" if title else ""
+    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/>{title_tag}<style>{style}</style></head><body>{body_html + body_extra}</body></html>"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page()
         page.set_content(full_html)
         page.pdf(
@@ -809,9 +1217,63 @@ def render_page_service(params: dict) -> str:
             print_background=True,
             margin={"top": top, "right": right, "bottom": bottom, "left": left},
             display_header_footer=False,
+            landscape=bool(params.get("landscape")),
+            tagged=bool(params.get("tagged")),
+            outline=bool(params.get("outline")),
         )
         browser.close()
+
+    _set_pdf_metadata(out_path, title, params.get("author"))
     return f"Documento PDF gerado: {out_path}"
+
+
+def render_image_service(params: dict) -> str:
+    out_path = validate_write_path(params["outputPath"])
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    width = params["width"]
+    height = params["height"]
+
+    fmt = (params.get("format") or "png").lower()
+    if fmt == "jpg":
+        fmt = "jpeg"
+    if fmt not in ("png", "jpeg"):
+        raise ValueError(f"format invalido: {fmt!r} (use 'png' ou 'jpeg')")
+
+    transparent = bool(params.get("transparentBackground")) and fmt == "png"
+
+    body_html = _embed_local_images_in_html(params["html"])
+    font_faces = _build_font_face_css(params.get("fonts"))
+    bg_reset = "background: transparent;" if transparent else ""
+    style = (font_faces + "\n" if font_faces else "") + params.get("css", "")
+    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>html,body{{margin:0;padding:0;{bg_reset}}}{style}</style></head><body>{body_html}</body></html>"
+
+    scale = params.get("scale") or 1
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page(
+            viewport={"width": width, "height": height},
+            device_scale_factor=scale,
+        )
+        page.set_content(full_html)
+        page.wait_for_timeout(50)
+
+        selector = params.get("selector")
+        target = page.query_selector(selector) if selector else None
+        if selector and target is None:
+            browser.close()
+            raise ValueError(f"selector nao encontrou nenhum elemento: {selector}")
+
+        shot_kwargs = {"path": out_path, "type": fmt}
+        if fmt == "png":
+            shot_kwargs["omit_background"] = transparent
+        if target is not None:
+            target.screenshot(**shot_kwargs)
+        else:
+            page.screenshot(full_page=True, **shot_kwargs)
+        browser.close()
+
+    return f"Imagem gerada: {out_path}"
 
 
 def patch_doc_service(params: dict) -> str:

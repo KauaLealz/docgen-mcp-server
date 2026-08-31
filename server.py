@@ -5,8 +5,9 @@ import json
 from services import (
     read_doc_service, read_sheet_service, read_archive_service,
     write_doc_service, write_sheet_service, render_slide_service,
-    render_page_service, patch_doc_service, patch_sheet_service,
-    scan_dir_service, diff_file_service, bundle_zip_service
+    render_page_service, render_image_service, patch_doc_service,
+    patch_sheet_service, scan_dir_service, diff_file_service,
+    bundle_zip_service
 )
 
 
@@ -67,15 +68,58 @@ def write_doc(
     content: str,
     contentFormat: Optional[str] = "markdown",
     templatePath: Optional[str] = None,
-    mergeFields: Optional[Dict[str, Any]] = None
+    mergeFields: Optional[Dict[str, Any]] = None,
+    css: Optional[str] = None,
+    headerHtml: Optional[str] = None,
+    footerHtml: Optional[str] = None,
+    margins: Optional[Dict[str, str]] = None,
+    fonts: Optional[List[Dict[str, str]]] = None,
+    fontFamily: Optional[str] = None,
+    landscape: Optional[bool] = None,
+    tagged: Optional[bool] = None,
+    outline: Optional[bool] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None
 ) -> str:
+    """contentFormat: "markdown" ou "json" (lista de blocos tipados:
+    heading/paragraph/list/table/image/code/blockquote/hr/pagebreak).
+    Imagem local em qualquer um dos dois formatos e embutida automaticamente
+    (nao depende do arquivo continuar no mesmo lugar depois).
+
+    Parametros validos so para type="pdf":
+    - css: substitui o estilo padrao por completo.
+    - headerHtml/footerHtml: cabecalho/rodape repetidos em toda pagina
+      (papel timbrado), via header_template/footer_template do Playwright.
+      Suportam <span class="pageNumber">/"totalPages"/"date"/"title"/"url">.
+    - fonts: lista de {"family", "path", "weight"?, "style"?} - fonte
+      customizada (.ttf/.otf/.woff/.woff2) embutida no PDF via @font-face,
+      funciona independente de estar instalada no sistema.
+    - landscape, tagged (PDF acessivel/com estrutura), outline (sumario
+      navegavel a partir dos headings).
+
+    Parametro valido so para type="docx":
+    - fontFamily: nome de fonte pro documento inteiro (precisa estar
+      instalada em quem for abrir o arquivo - DOCX nao embute fonte).
+
+    title/author: metadata do documento, valem pros dois tipos."""
     opts = {
         "path": path,
         "type": type,
         "content": content,
         "contentFormat": contentFormat,
         "templatePath": templatePath,
-        "mergeFields": mergeFields
+        "mergeFields": mergeFields,
+        "css": css,
+        "headerHtml": headerHtml,
+        "footerHtml": footerHtml,
+        "margins": margins,
+        "fonts": fonts,
+        "fontFamily": fontFamily,
+        "landscape": landscape,
+        "tagged": tagged,
+        "outline": outline,
+        "title": title,
+        "author": author
     }
     return write_doc_service(opts)
 
@@ -85,14 +129,18 @@ def write_sheet(
     data: List[Any],
     columns: Optional[Dict[str, str]] = None,
     freezePanes: Optional[bool] = None,
-    append: Optional[bool] = None
+    append: Optional[bool] = None,
+    delimiter: Optional[str] = None
 ) -> str:
+    """delimiter vale so para .csv (default ","; use ";" para Excel PT-BR).
+    .xlsx novo sai com cabecalho em negrito e largura de coluna automatica."""
     opts = {
         "path": path,
         "data": data,
         "columns": columns,
         "freezePanes": freezePanes,
-        "append": append
+        "append": append,
+        "delimiter": delimiter
     }
     return write_sheet_service(opts)
 
@@ -102,14 +150,27 @@ def render_slide(
     css: str,
     format: str,
     aspectRatio: str,
-    outputPath: str
+    outputPath: str,
+    fonts: Optional[List[Dict[str, str]]] = None,
+    tagged: Optional[bool] = None,
+    outline: Optional[bool] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None
 ) -> str:
+    """Imagem local em html e embutida automaticamente. fonts: lista de
+    {"family", "path", "weight"?, "style"?} pra fonte customizada via
+    @font-face. tagged/title/author valem so quando format="pdf"."""
     opts = {
         "html": html,
         "css": css,
         "format": format,
         "aspectRatio": aspectRatio,
-        "outputPath": outputPath
+        "outputPath": outputPath,
+        "fonts": fonts,
+        "tagged": tagged,
+        "outline": outline,
+        "title": title,
+        "author": author
     }
     return render_slide_service(opts)
 
@@ -119,16 +180,68 @@ def render_page(
     css: str,
     outputPath: str,
     generateTOC: Optional[bool] = None,
-    margins: Optional[Dict[str, str]] = None
+    margins: Optional[Dict[str, str]] = None,
+    fonts: Optional[List[Dict[str, str]]] = None,
+    landscape: Optional[bool] = None,
+    tagged: Optional[bool] = None,
+    outline: Optional[bool] = None,
+    title: Optional[str] = None,
+    author: Optional[str] = None
 ) -> str:
+    """Imagem local em html e embutida automaticamente. fonts: lista de
+    {"family", "path", "weight"?, "style"?} pra fonte customizada via
+    @font-face. tagged: PDF acessivel/com estrutura. outline: sumario
+    navegavel a partir dos headings. title/author: metadata do PDF."""
     opts = {
         "html": html,
         "css": css,
         "outputPath": outputPath,
         "generateTOC": generateTOC,
-        "margins": margins
+        "margins": margins,
+        "fonts": fonts,
+        "landscape": landscape,
+        "tagged": tagged,
+        "outline": outline,
+        "title": title,
+        "author": author
     }
     return render_page_service(opts)
+
+@mcp.tool(name="render_image")
+def render_image(
+    html: str,
+    css: str,
+    outputPath: str,
+    width: int,
+    height: int,
+    format: Optional[str] = "png",
+    transparentBackground: Optional[bool] = None,
+    selector: Optional[str] = None,
+    fonts: Optional[List[Dict[str, str]]] = None,
+    scale: Optional[float] = None
+) -> str:
+    """Gera uma imagem (PNG/JPEG) a partir de HTML/CSS via screenshot -
+    util pra logo/icone/banner standalone, nao so documentos. width/height
+    definem o viewport; se selector for informado (seletor CSS), captura só
+    esse elemento (ex: uma div .badge) em vez da pagina inteira -
+    dimensiona a imagem exatamente pelo tamanho do elemento.
+    transparentBackground remove o fundo (so vale pra format="png").
+    scale (ex: 2) aumenta a resolucao (device pixel ratio) mantendo o
+    layout logico em width x height. Imagem local referenciada em html e
+    embutida automaticamente, igual write_doc/render_page/render_slide."""
+    opts = {
+        "html": html,
+        "css": css,
+        "outputPath": outputPath,
+        "width": width,
+        "height": height,
+        "format": format,
+        "transparentBackground": transparentBackground,
+        "selector": selector,
+        "fonts": fonts,
+        "scale": scale
+    }
+    return render_image_service(opts)
 
 @mcp.tool(name="patch_doc")
 def patch_doc(
