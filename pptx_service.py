@@ -66,15 +66,17 @@ def create_pptx_from_html(
         presentation.core_properties.title = title
     if author:
         presentation.core_properties.author = author
-    temp_dir = tempfile.mkdtemp(prefix="docgen-pptx-")
-    temp_path = os.path.join(temp_dir, "presentation.pptx")
+    output_dir = os.path.dirname(out_path) or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".docgen-pptx-", suffix=".tmp", dir=output_dir)
+    os.close(fd)
     try:
         presentation.save(temp_path)
         _validate_pptx(temp_path)
         os.replace(temp_path, out_path)
     finally:
         try:
-            os.rmdir(temp_dir)
+            os.unlink(temp_path)
         except OSError:
             pass
     return out_path
@@ -183,7 +185,12 @@ def _add_element(slide, element, left, y, width, max_height, asset_base_path=Non
     if name == "img":
         source = _image_source(element.get("src", ""), asset_base_path)
         if source:
-            picture = slide.shapes.add_picture(source, Inches(left), Inches(y), width=Inches(min(width, 4)))
+            try:
+                requested_width = float(element.get("width", 4))
+            except (TypeError, ValueError):
+                requested_width = 4
+            image_width = min(width, max(0.5, requested_width))
+            picture = slide.shapes.add_picture(source, Inches(left), Inches(y), width=Inches(image_width))
             return y + picture.height / 914400 + 0.15
         return y
 
