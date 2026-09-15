@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from typing import Optional, List, Dict, Any
 import json
 
@@ -11,7 +11,7 @@ from services import (
 )
 
 
-mcp = FastMCP("Docgen")
+mcp = MCPServer("Docgen")
 
 @mcp.tool(name="read_doc")
 def read_doc(
@@ -62,7 +62,7 @@ def read_archive(
     return read_archive_service(path, pattern)
 
 @mcp.tool(name="write_doc")
-def write_doc(
+async def write_doc(
     path: str,
     type: str,
     content: str,
@@ -96,6 +96,12 @@ def write_doc(
       funciona independente de estar instalada no sistema.
     - landscape, tagged (PDF acessivel/com estrutura), outline (sumario
       navegavel a partir dos headings).
+    - margins: a area de margem da pagina e sempre pintada de branco pelo
+      Chromium, independente do background do CSS (limitacao do motor de
+      PDF, nao da pagina) - se o design tem fundo colorido/full-bleed, use
+      margins={"top":"0mm","right":"0mm","bottom":"0mm","left":"0mm"} e
+      coloque o respiro visual como padding no proprio HTML/CSS em vez de
+      depender desse parametro.
 
     Parametro valido so para type="docx":
     - fontFamily: nome de fonte pro documento inteiro (precisa estar
@@ -121,7 +127,7 @@ def write_doc(
         "title": title,
         "author": author
     }
-    return write_doc_service(opts)
+    return await write_doc_service(opts)
 
 @mcp.tool(name="write_sheet")
 def write_sheet(
@@ -145,7 +151,7 @@ def write_sheet(
     return write_sheet_service(opts)
 
 @mcp.tool(name="render_slide")
-def render_slide(
+async def render_slide(
     html: str,
     css: str,
     format: str,
@@ -155,11 +161,16 @@ def render_slide(
     tagged: Optional[bool] = None,
     outline: Optional[bool] = None,
     title: Optional[str] = None,
-    author: Optional[str] = None
+    author: Optional[str] = None,
+    footerHtml: Optional[str] = None,
+    assetBasePath: Optional[str] = None
 ) -> str:
     """Imagem local em html e embutida automaticamente. fonts: lista de
     {"family", "path", "weight"?, "style"?} pra fonte customizada via
-    @font-face. tagged/title/author valem so quando format="pdf"."""
+    @font-face. A apresentacao e gerada como arquivo PowerPoint (.pptx);
+    use <section> ou <div class="slide"> para separar os slides. `tagged` e
+    `outline` nao se aplicam a PPTX. `footerHtml` aceita `{slideNumber}` e
+    `{slideCount}`; `assetBasePath` resolve imagens relativas."""
     opts = {
         "html": html,
         "css": css,
@@ -170,12 +181,14 @@ def render_slide(
         "tagged": tagged,
         "outline": outline,
         "title": title,
-        "author": author
+        "author": author,
+        "footerHtml": footerHtml,
+        "assetBasePath": assetBasePath
     }
-    return render_slide_service(opts)
+    return await render_slide_service(opts)
 
 @mcp.tool(name="render_page")
-def render_page(
+async def render_page(
     html: str,
     css: str,
     outputPath: str,
@@ -191,7 +204,11 @@ def render_page(
     """Imagem local em html e embutida automaticamente. fonts: lista de
     {"family", "path", "weight"?, "style"?} pra fonte customizada via
     @font-face. tagged: PDF acessivel/com estrutura. outline: sumario
-    navegavel a partir dos headings. title/author: metadata do PDF."""
+    navegavel a partir dos headings. title/author: metadata do PDF.
+    margins: a area de margem e sempre branca no Chromium, mesmo com
+    background colorido no CSS (limitacao do motor de PDF) - pra layout
+    full-bleed/com fundo proprio use margins 0 e ponha o respiro como
+    padding no HTML/CSS em vez de usar este parametro."""
     opts = {
         "html": html,
         "css": css,
@@ -205,10 +222,10 @@ def render_page(
         "title": title,
         "author": author
     }
-    return render_page_service(opts)
+    return await render_page_service(opts)
 
 @mcp.tool(name="render_image")
-def render_image(
+async def render_image(
     html: str,
     css: str,
     outputPath: str,
@@ -241,7 +258,7 @@ def render_image(
         "fonts": fonts,
         "scale": scale
     }
-    return render_image_service(opts)
+    return await render_image_service(opts)
 
 @mcp.tool(name="patch_doc")
 def patch_doc(

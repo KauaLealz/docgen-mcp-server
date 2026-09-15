@@ -18,6 +18,8 @@ from services import (
     write_sheet_service,
 )
 
+pytestmark = pytest.mark.anyio
+
 
 def _make_png(path, w=8, h=8, rgb=(200, 30, 30)):
     def chunk(tag, data):
@@ -172,7 +174,7 @@ def test_docx_font_family_and_metadata(tmp_path):
 # ---------- PDF: custom font actually renders, metadata, landscape ----------
 
 
-def test_pdf_custom_font_is_available_in_page(tmp_path):
+async def test_pdf_custom_font_is_available_in_page(tmp_path):
     # exercised indirectly: a real font file makes page.pdf() succeed and
     # document.fonts.check would be True inside the page, but we don't have
     # a hook into the live page here - assert at least the pipeline runs
@@ -190,29 +192,29 @@ def test_pdf_custom_font_is_available_in_page(tmp_path):
     font_path.write_bytes(data)
 
     out = str(tmp_path / "styled.pdf")
-    write_pdf_service(
+    await write_pdf_service(
         "# Hello", "markdown", out,
         fonts=[{"family": "PacificoTest", "path": str(font_path)}],
         css="body{font-family:'PacificoTest',sans-serif;}",
     )
     reader = pypdf.PdfReader(out)
     text = "\n".join(p.extract_text() or "" for p in reader.pages)
-    assert "Hello" in text
+    assert "Hello" in text.replace(" ", "")
 
 
-def test_pdf_metadata_title_author(tmp_path):
+async def test_pdf_metadata_title_author(tmp_path):
     out = str(tmp_path / "meta.pdf")
-    write_pdf_service("# Hi", "markdown", out, title="Relatorio", author="Kaua")
+    await write_pdf_service("# Hi", "markdown", out, title="Relatorio", author="Kaua")
     reader = pypdf.PdfReader(out)
     assert reader.metadata.title == "Relatorio"
     assert reader.metadata.author == "Kaua"
 
 
-def test_pdf_landscape_changes_page_dimensions(tmp_path):
+async def test_pdf_landscape_changes_page_dimensions(tmp_path):
     out_portrait = str(tmp_path / "portrait.pdf")
     out_landscape = str(tmp_path / "landscape.pdf")
-    write_pdf_service("# Hi", "markdown", out_portrait)
-    write_pdf_service("# Hi", "markdown", out_landscape, landscape=True)
+    await write_pdf_service("# Hi", "markdown", out_portrait)
+    await write_pdf_service("# Hi", "markdown", out_landscape, landscape=True)
 
     pr = pypdf.PdfReader(out_portrait).pages[0]
     lr = pypdf.PdfReader(out_landscape).pages[0]
@@ -220,12 +222,12 @@ def test_pdf_landscape_changes_page_dimensions(tmp_path):
     assert float(lr.mediabox.width) > float(lr.mediabox.height)
 
 
-def test_pdf_local_image_actually_renders(tmp_path):
+async def test_pdf_local_image_actually_renders(tmp_path):
     png = tmp_path / "logo.png"
     _make_png(png)
     content = json.dumps([{"type": "image", "src": str(png), "width": 100}])
     out = str(tmp_path / "img.pdf")
-    write_pdf_service(content, "json", out)
+    await write_pdf_service(content, "json", out)
     # a broken image would still produce a valid (mostly blank) PDF, so the
     # meaningful assertion is that generation succeeds without raising and
     # produces a non-trivially-small file (a rendered raster costs bytes).

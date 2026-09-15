@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -23,13 +24,19 @@ import mammoth
 import markdownify
 import markdown as md_lib
 from bs4 import BeautifulSoup, NavigableString, Comment
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import Color
+from pptx import Presentation
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from security import validate_path, validate_write_path
 from config import get_read_sheet_max_rows, get_scan_max_matches
+from pptx_service import create_pptx_from_html
+
+
+MAX_ARCHIVE_ENTRIES = 100_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 
 
 REMOTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -242,6 +249,30 @@ def read_doc_service(file_path: str, options: dict) -> dict:
         )
         return {"markdown": md, "imagePaths": [], "note": note, "truncated": truncated}
 
+    if ext == ".pptx":
+        presentation = Presentation(resolved)
+        sections = []
+        for index, slide in enumerate(presentation.slides, start=1):
+            lines = []
+            for shape in slide.shapes:
+                if getattr(shape, "has_table", False):
+                    table = shape.table
+                    if table.rows:
+                        lines.append("| " + " | ".join(cell.text.replace("|", "\\|") for cell in table.rows[0].cells) + " |")
+                        lines.append("| " + " | ".join("---" for _ in table.rows[0].cells) + " |")
+                        for row in table.rows[1:]:
+                            lines.append("| " + " | ".join(cell.text.replace("|", "\\|") for cell in row.cells) + " |")
+                elif getattr(shape, "has_text_frame", False):
+                    text = shape.text.strip()
+                    if text:
+                        lines.append(text)
+            sections.append(f"## Slide {index}\n\n" + "\n\n".join(lines))
+        md, truncated = truncate_markdown(
+            "\n\n".join(sections) or "(PPTX sem texto.)",
+            options.get("maxChars"), options.get("previewOnly")
+        )
+        return {"markdown": md, "imagePaths": [], "note": note, "truncated": truncated}
+
     if ext == ".docx":
         image_paths = []
         if not options.get("extractImages"):
@@ -313,6 +344,8 @@ def parse_range(range_str: str, max_row: int, max_col: int):
     r0 = int(m.group(2)) - 1
     c1 = col_to_idx(m.group(3))
     r1 = int(m.group(4)) - 1
+    if r0 < 0 or r1 < 0 or c0 < 0 or c1 < 0 or r0 > r1 or c0 > c1:
+        return None
     return {
         "r0": max(0, r0),
         "r1": min(max_row - 1, r1),
@@ -331,7 +364,7 @@ def read_sheet_service(file_path: str, options: dict) -> dict:
             rows = list(reader)
     elif ext == ".ods":
         rows = read_ods_to_rows(resolved, options.get("sheetName"))
-    elif ext in {".xlsx", ".xlsm", ".xls"}:
+    elif ext in {".xlsx", ".xlsm"}:
         wb = openpyxl.load_workbook(resolved, read_only=True, data_only=True)
         name = options.get("sheetName")
         if not name or name not in wb.sheetnames:
@@ -339,7 +372,7 @@ def read_sheet_service(file_path: str, options: dict) -> dict:
         ws = wb[name]
         rows = [[cell for cell in row] for row in ws.iter_rows(values_only=True)]
     else:
-        raise ValueError(f"Extensao nao suportada para read_sheet: {ext}.")
+        raise ValueError(f"Extensao nao suportada para read_sheet: {ext}. Use .xlsx, .xlsm, .ods ou .csv.")
 
     if not rows:
         return {
@@ -427,7 +460,13 @@ def read_archive_service(file_path: str, pattern: Optional[str] = None) -> str:
         raise ValueError(f"read_archive suporta apenas .zip. Recebido: {ext}")
 
     with zipfile.ZipFile(resolved, "r") as z:
-        names = z.namelist()
+        infos = z.infolist()
+        if len(infos) > MAX_ARCHIVE_ENTRIES:
+            raise ValueError(f"read_archive: ZIP excede o limite de {MAX_ARCHIVE_ENTRIES} entradas.")
+        total_size = sum(info.file_size for info in infos)
+        if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise ValueError("read_archive: conteúdo descompactado do ZIP excede o limite de 200 MB.")
+        names = [info.filename for info in infos]
 
     if pattern:
         pat = pattern.strip()
@@ -918,7 +957,7 @@ def _set_pdf_metadata(out_path: str, title: Optional[str], author: Optional[str]
         writer.write(f)
 
 
-def write_pdf_service(
+async def write_pdf_service(
     content: str,
     fmt: str,
     out_path: str,
@@ -947,11 +986,11 @@ def write_pdf_service(
 
     show_header_footer = bool(header_html or footer_html)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
-        page = browser.new_page()
-        page.set_content(full_html)
-        page.pdf(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, channel="chrome")
+        page = await browser.new_page()
+        await page.set_content(full_html)
+        await page.pdf(
             path=out_path,
             format="A4",
             print_background=True,
@@ -963,12 +1002,12 @@ def write_pdf_service(
             tagged=bool(tagged),
             outline=bool(outline),
         )
-        browser.close()
+        await browser.close()
 
     _set_pdf_metadata(out_path, title, author)
 
 
-def write_doc_service(params: dict) -> str:
+async def write_doc_service(params: dict) -> str:
     out_path = validate_write_path(params["path"])
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fmt = params.get("contentFormat", "markdown")
@@ -995,7 +1034,7 @@ def write_doc_service(params: dict) -> str:
         return f"DOCX gravado em {out_path}."
 
     if dtype == "pdf":
-        write_pdf_service(
+        await write_pdf_service(
             params["content"],
             fmt,
             out_path,
@@ -1020,10 +1059,10 @@ def write_sheet_service(params: dict) -> str:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     ext = os.path.splitext(out_path)[1].lower()
     data = params["data"]
-    columns = params.get("columns", {})
+    columns = params.get("columns") or {}
 
     if not isinstance(data, list):
-        data = []
+        raise ValueError("write_sheet: data deve ser uma lista.")
 
     if not data:
         if ext == ".csv":
@@ -1058,6 +1097,8 @@ def write_sheet_service(params: dict) -> str:
 
     if ext == ".csv":
         delimiter = params.get("delimiter") or ","
+        if not isinstance(delimiter, str) or len(delimiter) != 1:
+            raise ValueError("write_sheet: delimiter deve conter exatamente um caractere.")
         with open(out_path, mode="w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f, delimiter=delimiter)
             writer.writerow(headers)
@@ -1104,67 +1145,29 @@ def _autofit_columns(ws, headers: list, row_values: list, max_width: int = 60):
         ws.column_dimensions[letter].width = min(max(width, 8) + 2, max_width)
 
 
-def render_slide_service(params: dict) -> str:
+async def render_slide_service(params: dict) -> str:
     out_path = validate_write_path(params["outputPath"])
+    if params["format"].lower() != "pptx":
+        raise ValueError("render_slide: format deve ser 'pptx'.")
+    unsupported = [name for name in ("fonts", "tagged", "outline") if params.get(name)]
+    if unsupported:
+        raise ValueError(f"render_slide: parâmetros não suportados para PPTX: {', '.join(unsupported)}.")
     aspect_ratio = params["aspectRatio"]
-    w = 1920 if aspect_ratio == "16:9" else 1024
-    h = 1080 if aspect_ratio == "16:9" else 768
-
-    font_faces = _build_font_face_css(params.get("fonts"))
-    slide_css = f"""
-    {font_faces}
-    @page {{ size: {w}px {h}px; margin: 0; }}
-    html, body {{ margin: 0; padding: 0; background: #fff; }}
-    .slide {{
-      width: {w}px;
-      min-height: {h}px;
-      box-sizing: border-box;
-      page-break-after: always;
-      page-break-inside: avoid;
-    }}
-    .slide:last-child {{ page-break-after: auto; }}
-    {params["css"]}
-    """
-    body_html = _embed_local_images_in_html(params["html"])
-    full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>{slide_css}</style></head><body>{body_html}</body></html>"
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
-        page = browser.new_page()
-        page.set_viewport_size({"width": w, "height": h})
-        page.set_content(full_html)
-
-        if params["format"] == "pdf":
-            page.pdf(
-                path=out_path,
-                width=f"{w}px",
-                height=f"{h}px",
-                print_background=True,
-                prefer_css_page_size=True,
-                tagged=bool(params.get("tagged")),
-                outline=bool(params.get("outline")),
-            )
-            browser.close()
-            _set_pdf_metadata(out_path, params.get("title"), params.get("author"))
-            return f"Slides exportados para PDF: {out_path}"
-
-        slides = page.evaluate(
-            "() => Array.from(document.querySelectorAll('.slide')).map(el => el.outerHTML)"
-        )
-        html_parts = slides if slides else [body_html]
-
-        zip_path = out_path if out_path.lower().endswith(".zip") else f"{out_path}.zip"
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-            for i, chunk in enumerate(html_parts):
-                doc = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/><style>{slide_css}\n{params['css']}</style></head><body>{chunk}</body></html>"
-                z.writestr(f"slide-{i + 1:03d}.html", doc)
-            z.writestr("styles-reference.css", slide_css + "\n" + params["css"])
-
-        browser.close()
-    return f"Slides exportados como ZIP: {zip_path}"
+    output = await asyncio.to_thread(
+        create_pptx_from_html,
+        params["html"],
+        out_path,
+        params.get("title"),
+        params.get("author"),
+        aspect_ratio,
+        params.get("css") or "",
+        params.get("footerHtml"),
+        params.get("assetBasePath"),
+    )
+    return f"Slides exportados para PPTX: {output}"
 
 
-def render_page_service(params: dict) -> str:
+async def render_page_service(params: dict) -> str:
     out_path = validate_write_path(params["outputPath"])
     toc_css = ""
     body_extra = ""
@@ -1207,11 +1210,11 @@ def render_page_service(params: dict) -> str:
     title_tag = f"<title>{_esc(title)}</title>" if title else ""
     full_html = f"<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'/>{title_tag}<style>{style}</style></head><body>{body_html + body_extra}</body></html>"
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
-        page = browser.new_page()
-        page.set_content(full_html)
-        page.pdf(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, channel="chrome")
+        page = await browser.new_page()
+        await page.set_content(full_html)
+        await page.pdf(
             path=out_path,
             format="A4",
             print_background=True,
@@ -1221,13 +1224,13 @@ def render_page_service(params: dict) -> str:
             tagged=bool(params.get("tagged")),
             outline=bool(params.get("outline")),
         )
-        browser.close()
+        await browser.close()
 
     _set_pdf_metadata(out_path, title, params.get("author"))
     return f"Documento PDF gerado: {out_path}"
 
 
-def render_image_service(params: dict) -> str:
+async def render_image_service(params: dict) -> str:
     out_path = validate_write_path(params["outputPath"])
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     width = params["width"]
@@ -1249,29 +1252,29 @@ def render_image_service(params: dict) -> str:
 
     scale = params.get("scale") or 1
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
-        page = browser.new_page(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, channel="chrome")
+        page = await browser.new_page(
             viewport={"width": width, "height": height},
             device_scale_factor=scale,
         )
-        page.set_content(full_html)
-        page.wait_for_timeout(50)
+        await page.set_content(full_html)
+        await page.wait_for_timeout(50)
 
         selector = params.get("selector")
-        target = page.query_selector(selector) if selector else None
+        target = await page.query_selector(selector) if selector else None
         if selector and target is None:
-            browser.close()
+            await browser.close()
             raise ValueError(f"selector nao encontrou nenhum elemento: {selector}")
 
         shot_kwargs = {"path": out_path, "type": fmt}
         if fmt == "png":
             shot_kwargs["omit_background"] = transparent
         if target is not None:
-            target.screenshot(**shot_kwargs)
+            await target.screenshot(**shot_kwargs)
         else:
-            page.screenshot(full_page=True, **shot_kwargs)
-        browser.close()
+            await page.screenshot(full_page=True, **shot_kwargs)
+        await browser.close()
 
     return f"Imagem gerada: {out_path}"
 
@@ -1363,17 +1366,23 @@ def patch_doc_service(params: dict) -> str:
 
         if ext == ".docx":
             temp_path = out_path + ".tmp"
-            with zipfile.ZipFile(resolved, "r") as jin:
-                with zipfile.ZipFile(temp_path, "w") as jout:
-                    for item in jin.infolist():
-                        data = jin.read(item.filename)
-                        if item.filename == "word/document.xml":
-                            xml_content = data.decode("utf-8")
-                            for r in reps:
-                                xml_content = xml_content.replace(r["from"], r["to"])
-                            data = xml_content.encode("utf-8")
-                        jout.writestr(item, data)
-            os.replace(temp_path, out_path)
+            try:
+                with zipfile.ZipFile(resolved, "r") as jin:
+                    with zipfile.ZipFile(temp_path, "w") as jout:
+                        for item in jin.infolist():
+                            data = jin.read(item.filename)
+                            if item.filename == "word/document.xml":
+                                xml_content = data.decode("utf-8")
+                                for replacement in reps:
+                                    if not isinstance(replacement, dict) or "from" not in replacement or "to" not in replacement:
+                                        raise ValueError("replace_text: cada substituição precisa de from e to.")
+                                    xml_content = xml_content.replace(str(replacement["from"]), str(replacement["to"]))
+                                data = xml_content.encode("utf-8")
+                            jout.writestr(item, data)
+                os.replace(temp_path, out_path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
             return f"Substituicoes aplicadas no DOCX em {out_path}."
 
         if ext == ".pdf":
@@ -1397,7 +1406,11 @@ def patch_sheet_service(file_path: str, updates: list) -> str:
     ws = wb.worksheets[0]
 
     for u in updates:
-        cell_ref = u["cell"]
+        if not isinstance(u, dict) or not isinstance(u.get("cell"), str):
+            raise ValueError("patch_sheet: cada atualização deve conter cell.")
+        cell_ref = u["cell"].strip()
+        if not re.fullmatch(r"[A-Za-z]{1,3}[1-9][0-9]*", cell_ref):
+            raise ValueError(f"patch_sheet: referência de célula inválida: {cell_ref!r}.")
         cell = ws[cell_ref]
         cell.value = u["value"]
         style = u.get("style")
@@ -1575,12 +1588,10 @@ def bundle_zip_service(files: List[str], output_name: str) -> str:
     if not files:
         raise ValueError("Informe ao menos um arquivo em files.")
     resolved = [validate_path(f, True) for f in files]
-    out_path_raw = (
-        output_name
-        if ("/" in output_name or "\\" in output_name)
-        else os.path.abspath(output_name)
-    )
-    out_path = validate_write_path(out_path_raw)
+    out_path = validate_write_path(output_name)
+    names = [os.path.basename(path) for path in resolved]
+    if len(names) != len(set(names)):
+        raise ValueError("bundle_zip: arquivos com o mesmo nome não podem ser empacotados juntos.")
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:

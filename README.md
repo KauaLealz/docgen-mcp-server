@@ -2,22 +2,22 @@
 
 ## O que é
 
-Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) via **stdio** para leitura e escrita de documentos, planilhas, renderização HTML→PDF (Puppeteer) e utilitários de arquivo. Está publicado no npm como **`docgen-mcp-server`** e requer **Node.js 18+**.
+Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) via **stdio** para leitura e escrita de documentos, planilhas, renderização HTML→PDF (Playwright) e utilitários de arquivo. É distribuído no PyPI como **`docgen-mcp-server`** e requer **Python 3.11+**.
 
-Recomenda-se executar com **`npx -y docgen-mcp-server@latest`** para o `npx` resolver sempre o dist-tag **latest** (evita reutilizar cache de instalação antiga). Para travar em uma versão: `docgen-mcp-server@<versão>` no lugar de `@latest`.
+Recomenda-se executar com **`uvx docgen-mcp-server`**. Para travar em uma versão, use `uvx --from docgen-mcp-server==0.2.2 docgen-mcp-server`.
 
-Na primeira execução, **Puppeteer** pode baixar Chromium (tools `render_slide` e `render_page`).
+Na primeira execução, o Playwright pode precisar de um navegador Chromium/Chrome instalado (tools `render_page` e `render_image`). `render_slide` gera o arquivo PowerPoint diretamente, sem navegador.
 
 ## Ferramentas
 
 | Módulo | Ferramenta | Descrição resumida |
 |--------|------------|-------------------|
-| **read_** | `read_doc` | `.docx`/`.pdf`/`.odt` → Markdown; `previewOnly` / `maxChars` limitam saída. |
+| **read_** | `read_doc` | `.docx`/`.pdf`/`.odt`/`.pptx` → Markdown; `previewOnly` / `maxChars` limitam saída. |
 | | `read_sheet` | Planilhas → JSON ou Markdown; `range` tipo `A1:D10`; `previewOnly` / `maxRows`. |
 | | `read_archive` | Lista árvore de entradas em `.zip`. |
-| **write_** | `write_doc` | `.docx`/`.pdf`; **Markdown** (`#`, listas, \`\`\`) ou `contentFormat: plain`; template `{{campo}}`. |
+| **write_** | `write_doc` | `.docx`/`.pdf`; **Markdown** (`#`, listas, \`\`\`) ou blocos JSON tipados; template `{{campo}}`. |
 | | `write_sheet` | `.xlsx` ou `.csv`; `append` em `.xlsx` para logs. |
-| **render_** | `render_slide` | HTML/CSS → PDF ou ZIP de slides (use `.slide` por página). |
+| **render_** | `render_slide` | HTML/CSS → PowerPoint `.pptx` (use `<section>` ou `.slide` por slide; `assetBasePath` resolve imagens relativas e `footerHtml` aceita `{slideNumber}`/`{slideCount}`). |
 | | `render_page` | HTML/CSS → PDF A4 (índice opcional). |
 | **patch_** | `patch_doc` | PDF: merge, split, watermark; DOCX: `replace_text` em XML. |
 | | `patch_sheet` | Atualiza células em `.xlsx`. |
@@ -41,13 +41,13 @@ Na primeira execução, **Puppeteer** pode baixar Chromium (tools `render_slide`
 
 Erros das tools devolvem **`structuredContent`** com `ok: false`, `code`, `tool`, `message` e às vezes `hint`.
 
-## Como usar nos clientes (recomendado: npm publicado)
+## Como usar nos clientes (recomendado: PyPI)
 
 Em qualquer cliente MCP com transporte **stdio**:
 
-- **Comando**: `npx` (no Windows, se necessário, use o caminho completo de `npx.cmd`).
-- **Argumentos**: `["-y", "docgen-mcp-server@latest"]` (ou versão fixa: `["-y", "docgen-mcp-server@3.0.0"]`).
-- **Variáveis de ambiente**: opcional; veja variáveis do Puppeteer/Chromium se precisar de proxy ou caminho de browser.
+- **Comando**: `uvx`.
+- **Argumentos**: `["docgen-mcp-server"]` (ou `["--from", "docgen-mcp-server==0.2.2", "docgen-mcp-server"]` para uma versão fixa).
+- **Variáveis de ambiente**: opcionais; veja as variáveis do Playwright/Chromium se precisar de proxy ou caminho de browser.
 
 Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
 
@@ -55,8 +55,8 @@ Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
 {
   "mcpServers": {
     "docgen": {
-      "command": "npx",
-      "args": ["-y", "docgen-mcp-server@latest"],
+      "command": "uvx",
+      "args": ["docgen-mcp-server"],
       "env": {}
     }
   }
@@ -73,63 +73,39 @@ No repositório há um exemplo em [`.cursor/mcp.json.example`](.cursor/mcp.json.
 
 Mesmo esquema de `command`, `args` e `env`. Detalhes de caminho do arquivo de configuração variam por SO; veja a [documentação da Anthropic sobre MCP](https://docs.anthropic.com/en/docs/agents-and-tools/mcp).
 
-### Problemas comuns no Windows com `npx`
+### Problemas comuns na instalação
 
-Se aparecer **`EPERM`**, **`TAR_ENTRY_ERROR`** ou erros tipo **`Cannot find package '...\node_modules\yauzl\index.js'`**, o cache do **`npx`** costuma estar **corrompido** (extração interrompida quando o Cursor recarrega o MCP no meio do `npm install`).
+Se `uvx` não for encontrado, instale o [uv](https://docs.astral.sh/uv/getting-started/installation/). Para atualizar uma instalação em cache, use `uvx --refresh docgen-mcp-server`.
 
-1. Desligue ou desative temporariamente o servidor Docgen no MCP.
-2. Apague **`%LocalAppData%\npm-cache\_npx`** (pasta inteira ou só o subdiretório do pacote).
-3. Suba o MCP de novo com `npx -y docgen-mcp-server@latest`.
-
-Alternativa estável: `npm install -g docgen-mcp-server` e no MCP use **`command`: `docgen-mcp-server`** (sem `npx`), ou **`node`** com o caminho absoluto do `cli.js` global.
+Se a ferramenta de renderização reclamar de navegador, instale o Chromium com `playwright install chromium` ou configure o caminho de um Chrome já instalado.
 
 ## Desenvolvimento a partir do clone
 
 ```bash
 git clone <repo>
 cd docgen-mcp-server
-npm install
-npm run build
-npm start
+uv sync
+uv run docgen-mcp-server
 ```
 
 Sem build prévio (local):
 
 ```bash
-npm install
-npm run dev
+uv run docgen-mcp-server
 ```
 
 | Script | Ação |
 |--------|------|
-| `npm run build` | Compila `src/` → `dist/` (`tsc`) |
-| `npm start` | `node dist/cli.js` |
-| `npm run dev` | `tsx src/cli.ts` |
+| `uv sync` | Instala dependências do projeto |
+| `uv run docgen-mcp-server` | Executa o servidor |
+| `uv build` | Gera os artefatos para publicação |
 
-## Publicação no npm (mantenedores)
-
-O pacote não inclui `node_modules`; o tarball contém só `dist/` + `README.md` + `package.json` (dependências são instaladas pelo cliente ao rodar `npx`).
+## Publicação no PyPI (mantenedores)
 
 ```bash
-npm whoami
-npm publish --dry-run
-npm publish
-```
-
-Se a conta tiver **2FA “Auth and writes”**, o npm exige OTP:
-
-```bash
-npm publish --otp=123456
-```
-
-Erro **403 Forbidden** com nome livre costuma ser: OTP ausente, `npm login` em outra conta, ou registro apontando para outro servidor (`npm config get registry` deve ser `https://registry.npmjs.org/`).
-
-Versões subsequentes (como no Nautilus):
-
-```bash
-npm run release        # patch
-npm run release:minor
-npm run release:major
+uv build
+uv publish --dry-run
+uv publish
 ```
 
 ## Licença

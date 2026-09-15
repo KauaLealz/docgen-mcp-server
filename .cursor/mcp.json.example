@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "docgen": {
-      "command": "npx",
-      "args": ["-y", "docgen-mcp-server@latest"],
+      "command": "uvx",
+      "args": ["docgen-mcp-server"],
       "env": {}
     }
   }

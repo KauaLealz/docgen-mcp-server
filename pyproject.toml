@@ -1,31 +1,35 @@
 [project]
 name = "docgen-mcp-server"
-version = "0.2.0"
-description = "MCP server for generating, reading, and patching documents (DOCX/PDF/XLSX), rendering HTML/CSS to PDF or images, and diffing/archiving files"
+version = "0.2.2"
+description = "MCP server for generating, reading, and patching documents (DOCX/PDF/PPTX/XLSX), rendering HTML/CSS, and diffing/archiving files"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "beautifulsoup4>=4.14.3",
-    "mammoth>=1.12.0",
-    "markdown>=3.8",
-    "markdownify>=1.2.2",
-    "mcp>=1.27.2",
-    "openpyxl>=3.1.5",
-    "playwright>=1.60.0",
-    "pypdf>=6.12.2",
-    "python-docx>=1.2.0",
-    "python-dotenv>=1.2.2",
-    "reportlab>=4.5.1",
+    "beautifulsoup4==4.15.0",
+    "mammoth==1.12.1",
+    "markdown==3.10.3",
+    "markdownify==1.2.3",
+    "mcp==2.1.1",
+    "openpyxl==3.1.5",
+    "playwright==1.62.0",
+    "pypdf==6.16.2",
+    "python-pptx==1.0.2",
+    "python-docx==1.2.0",
+    "python-dotenv==1.2.3",
+    "reportlab==5.0.1",
 ]
 
 [project.scripts]
 docgen-mcp-server = "server:main"
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools]
-py-modules = ["server", "config", "security", "services"]
+py-modules = ["server", "config", "security", "services", "pptx_service"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0",
+    "pytest==9.1.1",
 ]
-
