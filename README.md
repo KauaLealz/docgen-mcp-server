@@ -1,55 +1,49 @@
-# DocGen MCP Server
+# docgen-mcp-server
 
-## O que é
+> Servidor [MCP](https://modelcontextprotocol.io) para **ler, escrever, editar e renderizar documentos** — DOCX, PDF, PPTX, XLSX, CSV, ODT — além de HTML/CSS → PDF/slides/imagem, diff, busca e empacotamento.
 
-Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) via **stdio** para leitura e escrita de documentos, planilhas, renderização HTML→PDF (Playwright) e utilitários de arquivo. É distribuído no PyPI como **`docgen-mcp-server`** e requer **Python 3.11+**.
+## O que faz
 
-Recomenda-se executar com **`uvx docgen-mcp-server`**. Para travar em uma versão, use `uvx --from docgen-mcp-server==0.2.2 docgen-mcp-server`.
+Dá a um agente um conjunto de ferramentas de escritório sobre arquivos locais: extrair conteúdo como Markdown, gerar documentos e planilhas, renderizar HTML/CSS em PDF (Chromium), slides PowerPoint ou imagens, e operações utilitárias (patch, diff, busca, zip).
 
-Na primeira execução, o Playwright pode precisar de um navegador Chromium/Chrome instalado (tools `render_page` e `render_image`). `render_slide` gera o arquivo PowerPoint diretamente, sem navegador.
+| Tool | O que faz |
+|------|-----------|
+| `read_doc` | Lê `.docx`/`.pdf`/`.odt`/`.pptx` e devolve Markdown. |
+| `read_sheet` | Lê planilha (`.xlsx`/`.csv`) como Markdown ou JSON (`range`, `sheetName`). |
+| `read_archive` | Lista a árvore de um `.zip` (com filtro opcional). |
+| `write_doc` | Gera `.docx` ou `.pdf` a partir de Markdown ou blocos JSON; suporta template `{{campo}}`. |
+| `write_sheet` | Gera `.xlsx` ou `.csv` a partir de dados. |
+| `render_slide` | HTML/CSS → apresentação `.pptx` (um slide por `<section>`). |
+| `render_page` | HTML/CSS → PDF A4 (Chromium). |
+| `render_image` | HTML/CSS → imagem PNG/JPEG. |
+| `patch_doc` | Edita PDF (merge/split/watermark) e DOCX (replace_text). |
+| `patch_sheet` | Atualiza células de um `.xlsx`. |
+| `scan_dir` | Busca por regex em diretório/arquivos/ZIPs. |
+| `diff_file` | Diff de texto ou de planilhas. |
+| `bundle_zip` | Compacta uma lista de arquivos num ZIP. |
 
-## Ferramentas
+## Requisitos
 
-| Módulo | Ferramenta | Descrição resumida |
-|--------|------------|-------------------|
-| **read_** | `read_doc` | `.docx`/`.pdf`/`.odt`/`.pptx` → Markdown; `previewOnly` / `maxChars` limitam saída. |
-| | `read_sheet` | Planilhas → JSON ou Markdown; `range` tipo `A1:D10`; `previewOnly` / `maxRows`. |
-| | `read_archive` | Lista árvore de entradas em `.zip`. |
-| **write_** | `write_doc` | `.docx`/`.pdf`; **Markdown** (`#`, listas, \`\`\`) ou blocos JSON tipados; template `{{campo}}`. |
-| | `write_sheet` | `.xlsx` ou `.csv`; `append` em `.xlsx` para logs. |
-| **render_** | `render_slide` | HTML/CSS → PowerPoint `.pptx` (use `<section>` ou `.slide` por slide; `assetBasePath` resolve imagens relativas e `footerHtml` aceita `{slideNumber}`/`{slideCount}`). |
-| | `render_page` | HTML/CSS → PDF A4 (índice opcional). |
-| **patch_** | `patch_doc` | PDF: merge, split, watermark; DOCX: `replace_text` em XML. |
-| | `patch_sheet` | Atualiza células em `.xlsx`. |
-| **system_** | `scan_dir` | Busca por regex em diretório ou em arquivos/ZIPs. |
-| | `diff_file` | Diff texto ou dados (planilhas). |
-| | `bundle_zip` | Compacta lista de arquivos em um ZIP. |
+- **Python 3.11+**.
+- **Chromium** — necessário só para renderização a partir de HTML (`render_page`, `render_image` e `write_doc` em PDF). Instale uma vez com `playwright install chromium`. As tools de DOCX/XLSX/PPTX/leitura **não** precisam de navegador.
 
-### Segurança
+## Instalação
 
-- Sem `..` nos caminhos; leitura limitada por tamanho de ficheiro.
-- **Escrita bloqueada** em pastas do sistema (ex.: `Windows`, `Program Files`, `.ssh`, `.aws` no home).
-- Opcional: **`DOCGEN_ALLOWED_ROOTS`** — lista separada por vírgulas de pastas absolutas; só é permitido ler/escrever dentro delas (útil em monorepos/CI).
+```bash
+# Executar direto, via uv:
+uvx docgen-mcp-server
 
-### Variáveis de ambiente (opcional)
+# Ou instalar no sistema:
+uv tool install docgen-mcp-server
+# (alternativa: pip install docgen-mcp-server)
 
-| Variável | Efeito |
-|----------|--------|
-| `DOCGEN_ALLOWED_ROOTS` | Ex.: `C:\repo\my-app,C:\tmp` — restrição de caminhos. |
-| `DOCGEN_SCAN_MAX_MATCHES` | Máximo de correspondências em `scan_dir` (padrão 500). |
-| `DOCGEN_READ_SHEET_MAX_ROWS` | Teto de linhas de dados em `read_sheet` quando não usas `maxRows` (padrão 10000). |
+# Uma vez, se for usar renderização HTML (PDF/imagem):
+playwright install chromium
+```
 
-Erros das tools devolvem **`structuredContent`** com `ok: false`, `code`, `tool`, `message` e às vezes `hint`.
+## Configuração
 
-## Como usar nos clientes (recomendado: PyPI)
-
-Em qualquer cliente MCP com transporte **stdio**:
-
-- **Comando**: `uvx`.
-- **Argumentos**: `["docgen-mcp-server"]` (ou `["--from", "docgen-mcp-server==0.2.2", "docgen-mcp-server"]` para uma versão fixa).
-- **Variáveis de ambiente**: opcionais; veja as variáveis do Playwright/Chromium se precisar de proxy ou caminho de browser.
-
-Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
+Aponte o cliente MCP para o servidor. Ele **roda sem nenhuma configuração obrigatória** — não precisa de chave nem credencial:
 
 ```json
 {
@@ -63,51 +57,18 @@ Exemplo (Cursor, VS Code com MCP, Claude Desktop, etc.):
 }
 ```
 
-No repositório há um exemplo em [`.cursor/mcp.json.example`](.cursor/mcp.json.example).
+O mesmo bloco vale para Cursor, Claude Desktop, Claude Code e outras IDEs com MCP por stdio.
 
-### Cursor
+### Variáveis de ambiente (todas opcionais)
 
-**Configurações → MCP** (ou JSON de MCP do projeto): use `command`, `args` e `env` como acima.
+| Variável | Efeito | Default |
+|----------|--------|---------|
+| `DOCGEN_ALLOWED_ROOTS` | Pastas (separadas por vírgula) às quais limitar toda leitura/escrita. Fora delas → erro. | sem restrição |
+| `DOCGEN_SCAN_MAX_MATCHES` | Teto de correspondências em `scan_dir` (1–50000). | 500 |
+| `DOCGEN_READ_SHEET_MAX_ROWS` | Teto de linhas em `read_sheet` sem `maxRows` (1–100000). | 10000 |
 
-### Claude Desktop
+## Segurança
 
-Mesmo esquema de `command`, `args` e `env`. Detalhes de caminho do arquivo de configuração variam por SO; veja a [documentação da Anthropic sobre MCP](https://docs.anthropic.com/en/docs/agents-and-tools/mcp).
-
-### Problemas comuns na instalação
-
-Se `uvx` não for encontrado, instale o [uv](https://docs.astral.sh/uv/getting-started/installation/). Para atualizar uma instalação em cache, use `uvx --refresh docgen-mcp-server`.
-
-Se a ferramenta de renderização reclamar de navegador, instale o Chromium com `playwright install chromium` ou configure o caminho de um Chrome já instalado.
-
-## Desenvolvimento a partir do clone
-
-```bash
-git clone <repo>
-cd docgen-mcp-server
-uv sync
-uv run docgen-mcp-server
-```
-
-Sem build prévio (local):
-
-```bash
-uv run docgen-mcp-server
-```
-
-| Script | Ação |
-|--------|------|
-| `uv sync` | Instala dependências do projeto |
-| `uv run docgen-mcp-server` | Executa o servidor |
-| `uv build` | Gera os artefatos para publicação |
-
-## Publicação no PyPI (mantenedores)
-
-```bash
-uv build
-uv publish --dry-run
-uv publish
-```
-
-## Licença
-
-ISC
+- **Path traversal bloqueado** (rejeita `..`) e **limite de 50 MB** por arquivo lido.
+- **Allowlist opcional** de raízes via `DOCGEN_ALLOWED_ROOTS`.
+- **Escrita bloqueada** em diretórios protegidos do sistema (`C:\Windows`, `Program Files`, `/etc`, `/usr`…) e em pastas sensíveis do home (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`…).
